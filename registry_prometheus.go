@@ -1,0 +1,134 @@
+package statekit
+
+import (
+	"fmt"
+	"io"
+	"maps"
+	"net/http"
+	"sort"
+	"strings"
+)
+
+// Per the Prometheus text exposition format:
+//   - HELP text escapes backslash and newline.
+//   - Label values escape backslash, newline, and double quote.
+var (
+	helpEscaper       = strings.NewReplacer(`\`, `\\`, "\n", `\n`)
+	labelValueEscaper = strings.NewReplacer(`\`, `\\`, "\n", `\n`, `"`, `\"`)
+)
+
+func (r *Registry) Prometheus(w io.Writer) error {
+	r.mu.RLock()
+	labels := maps.Clone(r.labels)
+	collectors := append([]PrometheusCollector(nil), r.collectors...)
+	descs := make([]PrometheusDesc, 0, len(r.descs))
+	for _, desc := range r.descs {
+		descs = append(descs, desc)
+	}
+	r.mu.RUnlock()
+
+	samples := make([]PrometheusSample, 0)
+	for _, snap := range r.Snapshot() {
+		samples = append(samples, stateSamples(snap)...)
+	}
+	for _, collector := range collectors {
+		samples = append(samples, collector.CollectPrometheus()...)
+	}
+
+	sort.Slice(samples, func(i, j int) bool {
+		if samples[i].Name != samples[j].Name {
+			return samples[i].Name < samples[j].Name
+		}
+		return formatLabels(samples[i].Labels) < formatLabels(samples[j].Labels)
+	})
+	samplesByName := make(map[string][]PrometheusSample)
+	for _, sample := range samples {
+		samplesByName[sample.Name] = append(samplesByName[sample.Name], sample)
+	}
+
+	sort.Slice(descs, func(i, j int) bool {
+		return descs[i].Name < descs[j].Name
+	})
+	for _, desc := range descs {
+		if _, err := fmt.Fprintf(w, "# HELP %s %s\n", desc.Name, helpEscaper.Replace(desc.Help)); err != nil {
+			return err
+		}
+		if _, err := fmt.Fprintf(w, "# TYPE %s %s\n", desc.Name, desc.Type); err != nil {
+			return err
+		}
+		if err := writePrometheusSamples(w, labels, samplesByName[desc.Name]); err != nil {
+			return err
+		}
+		delete(samplesByName, desc.Name)
+	}
+
+	for _, sample := range samples {
+		if _, undescribed := samplesByName[sample.Name]; !undescribed {
+			continue
+		}
+		if err := writePrometheusSamples(w, labels, []PrometheusSample{sample}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func writePrometheusSamples(w io.Writer, labels map[string]string, samples []PrometheusSample) error {
+	for _, sample := range samples {
+		merged := maps.Clone(labels)
+		for k, v := range sample.Labels {
+			if _, exists := merged[k]; exists {
+				return fmt.Errorf("prometheus label %q conflicts with registry label", k)
+			}
+			merged[k] = v
+		}
+		if _, err := fmt.Fprintf(w, "%s%s %g\n", sample.Name, formatLabels(merged), sample.Value); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (r *Registry) PrometheusHandler() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+		if err := r.Prometheus(w); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+		}
+	})
+}
+
+func stateSamples(s Snapshot) []PrometheusSample {
+	labels := map[string]string{
+		"state":      s.Name,
+		"importance": s.Importance.String(),
+	}
+	samples := []PrometheusSample{
+		{Name: "state_level", Labels: labels, Value: prometheusStatusValue(s.Status)},
+		{Name: "state_time_in_state_seconds", Labels: labels, Value: float64(s.TimeInStateSecs)},
+	}
+	for _, child := range s.Checks {
+		samples = append(samples, stateSamples(child)...)
+	}
+	return samples
+}
+
+func prometheusStatusValue(status Status) float64 {
+	return float64(status) + 1
+}
+
+func formatLabels(labels map[string]string) string {
+	if len(labels) == 0 {
+		return ""
+	}
+	keys := make([]string, 0, len(labels))
+	for k := range labels {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, k := range keys {
+		parts = append(parts, fmt.Sprintf(`%s="%s"`, k, labelValueEscaper.Replace(labels[k])))
+	}
+	return "{" + strings.Join(parts, ",") + "}"
+}

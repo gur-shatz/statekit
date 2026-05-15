@@ -1,0 +1,162 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>statekit component demo</title>
+  <style>
+    :root {
+      color-scheme: light;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #f6f7f9;
+      color: #17202a;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; }
+    main { width: min(1180px, calc(100% - 32px)); margin: 0 auto; padding: 28px 0 40px; }
+    header { display: flex; align-items: end; justify-content: space-between; gap: 16px; margin-bottom: 22px; }
+    h1 { margin: 0; font-size: 28px; line-height: 1.15; font-weight: 760; }
+    h2 { margin: 0 0 12px; font-size: 16px; }
+    a { color: #1b5fc1; font-weight: 650; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    .links { display: flex; gap: 14px; flex-wrap: wrap; }
+    .grid { display: grid; grid-template-columns: 1.05fr 0.95fr; gap: 18px; align-items: start; }
+    .panel { background: #fff; border: 1px solid #d9dee7; border-radius: 8px; padding: 16px; box-shadow: 0 1px 2px rgb(15 23 42 / 0.06); }
+    .states { display: grid; gap: 10px; }
+    .state { display: grid; grid-template-columns: 120px 92px 1fr; gap: 10px; align-items: center; padding: 10px; border: 1px solid #e4e8ef; border-radius: 6px; }
+    .name { font-weight: 720; }
+    .pill { display: inline-flex; justify-content: center; min-width: 68px; border-radius: 999px; padding: 4px 8px; font-size: 13px; font-weight: 760; text-transform: uppercase; }
+    .pass { background: #dff7e8; color: #14683a; }
+    .warn { background: #fff2c6; color: #8a5a00; }
+    .fail { background: #ffe1df; color: #9b1c16; }
+    .down { background: #e5e7eb; color: #111827; }
+    .msg { color: #526070; min-width: 0; overflow-wrap: anywhere; }
+    form { display: grid; gap: 10px; }
+    .row { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+    label { display: grid; gap: 5px; color: #526070; font-size: 13px; font-weight: 650; }
+    select, input, button { width: 100%; min-height: 38px; border: 1px solid #c9d1dd; border-radius: 6px; padding: 8px 10px; font: inherit; }
+    button { border-color: #1f6feb; background: #1f6feb; color: #fff; font-weight: 720; cursor: pointer; }
+    button.secondary { border-color: #3d4856; background: #3d4856; }
+    .metrics { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+    .metric { border: 1px solid #e4e8ef; border-radius: 6px; padding: 10px; }
+    .metric strong { display: block; font-size: 22px; margin-top: 4px; }
+    pre { margin: 0; max-height: 420px; overflow: auto; background: #101820; color: #edf2f7; border-radius: 6px; padding: 14px; font-size: 12px; line-height: 1.45; }
+    @media (max-width: 820px) {
+      header, .grid { display: block; }
+      .links { margin-top: 12px; }
+      .panel { margin-bottom: 16px; }
+      .row, .metrics, .state { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <div>
+        <h1>statekit component demo</h1>
+        <div class="msg">Aggregate state: <span class="pill {{.Snapshot.Status}}">{{.Snapshot.Status}}</span> {{.Snapshot.Message}}</div>
+      </div>
+      <nav class="links">
+        <a href="/state">JSON state</a>
+        <a href="/state/display.json">Display JSON</a>
+        <a href="/state/display.yaml">Display YAML</a>
+        <a href="/metrics">Prometheus scrape</a>
+      </nav>
+    </header>
+
+    <div class="grid">
+      <section class="panel">
+        <h2>Component States</h2>
+        <div class="states">
+          {{range .Snapshot.Checks}}
+          <div class="state">
+            <div class="name">{{.Name}}</div>
+            <span class="pill {{.Status}}">{{.Status}}</span>
+            <div class="msg">{{.Message}}</div>
+          </div>
+          {{end}}
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>Metrics</h2>
+        <div class="metrics">
+          {{range .Metrics}}
+          <div class="metric">
+            <span class="msg">{{.Name}}</span>
+            <strong>{{.Value}}</strong>
+          </div>
+          {{end}}
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>Set Manual State</h2>
+        <form method="post" action="/state">
+          <div class="row">
+            <label>Target
+              <select name="target">
+                <option value="database">database</option>
+                <option value="cache">cache</option>
+                <option value="worker">worker</option>
+              </select>
+            </label>
+            <label>Status
+              <select name="status">
+                <option value="pass">pass</option>
+                <option value="warn">warn</option>
+                <option value="fail">fail</option>
+                <option value="down">down</option>
+              </select>
+            </label>
+            <label>Message
+              <input name="message" value="operator changed state">
+            </label>
+            <label>&nbsp;
+              <button type="submit">Apply</button>
+            </label>
+          </div>
+        </form>
+      </section>
+
+      <section class="panel">
+        <h2>Record Upstream Outcome</h2>
+        <form method="post" action="/outcome">
+          <div class="row">
+            <button name="outcome" value="pass" type="submit">Pass</button>
+            <button class="secondary" name="outcome" value="fail" type="submit">Fail</button>
+          </div>
+        </form>
+        <p class="msg">Window {{.Ratio.Window}}, total {{.Ratio.Total}}, failures {{.Ratio.Failures}}, ratio {{printf "%.2f" .Ratio.FailRatio}}</p>
+      </section>
+
+      <section class="panel">
+        <h2>Adjust Metrics</h2>
+        <form method="post" action="/metric">
+          <div class="row">
+            <label>Metric
+              <select name="metric">
+                <option value="queue">queue depth</option>
+                <option value="latency">latency ms</option>
+                <option value="requests">add requests</option>
+                <option value="errors">add errors</option>
+              </select>
+            </label>
+            <label>Value
+              <input name="value" type="number" step="1" value="1">
+            </label>
+            <label>&nbsp;
+              <button type="submit">Update</button>
+            </label>
+          </div>
+        </form>
+      </section>
+
+      <section class="panel">
+        <h2>Current Snapshot</h2>
+        <pre>{{json .Snapshot}}</pre>
+      </section>
+    </div>
+  </main>
+</body>
+</html>
