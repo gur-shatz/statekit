@@ -2,25 +2,15 @@
 
 `statekit` is a small Go library for component-owned runtime state.
 
-The core idea is that application objects should own their own condition,
-locking, history, and evaluation logic. A registry only enumerates those objects
-and exposes snapshots through JSON or Prometheus-style text.
+The core idea is that application objects own their own condition, locking,
+history, and evaluation logic. `statekit` provides two kinds of objects:
 
-## Concepts
+- **States** report the condition of a component (`pass` / `warn` / `fail` /
+  `down`) along with a message, history, and optional structured data.
+- **Metrics** report numeric values from inside the component.
 
-- `State`: small interface implemented by anything that can report a safe
-  snapshot.
-- `ManualState`: explicitly set state.
-- `AggregateState`: state derived from child states, with children added
-  progressively as subsystems initialize.
-- `Importance`: whether a state is `important` or `informational` when it
-  contributes to an aggregate.
-- `PrometheusCollector`: optional interface for factual metrics beyond state.
-- `Counter`, `Gauge`, `CounterVec`, `GaugeVec`: built-in Prometheus
-  collectors for scalar and labeled values.
-- `Registry`: collects states and optional collectors, applies const labels,
-  and exposes raw state, display JSON/YAML, or Prometheus handlers.
-- `FailRatio`: built-in state object for pass/fail outcome windows.
+A `Registry` enumerates both, applies const labels, and serves HTTP
+endpoints for JSON snapshots and Prometheus scrapes.
 
 ## Example
 
@@ -35,7 +25,13 @@ app.Add(db)
 app.AddInformational(cache)
 reg.Register(app)
 
+requests := statekit.NewCounter("requests_total", "Total requests served.")
+inflight := statekit.NewGauge("inflight_requests", "Requests currently being served.")
+reg.RegisterCollectors(requests, inflight)
+
 db.Fail("connection refused", nil)
+requests.Inc()
+inflight.Set(2)
 
 http.Handle("/state", reg.JSONHandler())
 http.Handle("/state/display.json", reg.StateDisplayJSONHandler())
@@ -43,60 +39,312 @@ http.Handle("/state/display.yaml", reg.StateDisplayYAMLHandler())
 http.Handle("/metrics", reg.PrometheusHandler())
 ```
 
-## State Display
+## State
 
-The display endpoints wrap the current state tree in a stable document shape
-that includes the registry label hierarchy. A fleet-wide visualizer can merge
-many component documents by `label_path`.
+A `State` is anything that implements the small interface:
 
-```json
-{
-  "kind": "statekit.state.v1",
-  "label_path": [
-    {"name": "component", "value": "issuer"}
-  ],
-  "states": []
+```go
+type State interface {
+    Name() string
+    Snapshot() Snapshot
 }
 ```
 
-## Prometheus Metrics
+A snapshot carries a current status, a message, history, and optionally a
+nested tree of child snapshots.
+
+### Status levels
+
+Every state reports one of four statuses, in ascending severity:
+
+| Status | Meaning                    |
+| ------ | -------------------------- |
+| `pass` | Everything is fine.        |
+| `warn` | Degraded but operational.  |
+| `fail` | Broken or unable to serve. |
+| `down` | Not reachable at all.      |
+
+### Built-in states
+
+`statekit` ships three built-in implementations: `ManualState`,
+`AggregateState`, and `FailRatio`.
+
+#### Manual state
+
+Set explicitly by the component:
 
 ```go
-requests := statekit.NewCounterVec(
-	"http_requests_total",
-	"Total HTTP requests.",
-	"route",
-	"status",
-)
-inflight := statekit.NewGauge("http_inflight_requests", "In-flight HTTP requests.")
-
-reg.RegisterCollector(requests)
-reg.RegisterCollector(inflight)
-
-requests.WithLabelValues("/checkout", "200").Inc()
-inflight.Set(3)
+db := statekit.NewManualState("database")
+db.Fail("connection refused", nil)
 ```
 
-## Fail Ratio
+#### Aggregate state
+
+Derives a parent status from a tree of children. Children can be added
+progressively as subsystems initialize. Each child contributes its own
+status to the aggregate; the parent reports the worst.
+
+```go
+app := statekit.NewStateAggregator("issuer")
+app.Add(db)
+app.AddInformational(cache)
+```
+
+`AddInformational` caps a child's contribution at `warn` even if the child
+itself reports `fail` or `down`. Use it for optional subsystems whose
+failure should not take the whole component down. The same cap can be
+attached to the state directly:
+
+```go
+cache := statekit.NewManualState("cache", statekit.WithImportance(statekit.Informational))
+```
+
+#### Fail ratio
+
+Tracks pass/fail outcomes over a sliding window and evaluates them into a
+status:
 
 ```go
 upstream := statekit.NewFailRatio(
-	"upstream",
-	time.Minute,
-	statekit.RatioPolicy{MinSamples: 10, WarnAt: 0.25, FailAt: 0.5},
+    "upstream",
+    time.Minute,
+    statekit.RatioPolicy{MinSamples: 10, WarnAt: 0.25, FailAt: 0.5},
 )
 
 upstream.Pass()
 upstream.Fail()
 ```
 
-Use `statekit.AllFailed(minSamples, status)` when the policy should only fire if
-every observed outcome in the window failed.
+`statekit.AllFailed(minSamples, status)` provides a policy that only fires
+when every observed outcome in the window failed.
+
+### Custom states
+
+For richer evaluation logic, implement `State` directly. Composing with
+a `ManualState` gives you history and time-in-state for free.
+
+A quorum monitor over a set of upstream servers is a good example: it
+reports `warn` as soon as one server is unhealthy and `fail` once more
+than a configured threshold are down.
+
+```go
+// QuorumState wraps a ManualState and reports fail when more than
+// maxFailing of its upstreams are unhealthy.
+type QuorumState struct {
+    state      *statekit.ManualState
+    total      int
+    maxFailing int
+
+    mu      sync.Mutex
+    failing map[string]struct{}
+}
+
+func NewQuorumState(name string, total, maxFailing int) *QuorumState {
+    return &QuorumState{
+        state:      statekit.NewManualState(name),
+        total:      total,
+        maxFailing: maxFailing,
+        failing:    make(map[string]struct{}),
+    }
+}
+
+func (q *QuorumState) Name() string                { return q.state.Name() }
+func (q *QuorumState) Snapshot() statekit.Snapshot { return q.state.Snapshot() }
+
+func (q *QuorumState) Mark(server string, healthy bool) {
+    q.mu.Lock()
+    defer q.mu.Unlock()
+    if healthy {
+        delete(q.failing, server)
+    } else {
+        q.failing[server] = struct{}{}
+    }
+    msg := fmt.Sprintf("%d/%d upstreams failing", len(q.failing), q.total)
+    switch {
+    case len(q.failing) > q.maxFailing:
+        q.state.Fail(msg, nil)
+    case len(q.failing) > 0:
+        q.state.Warn(msg, nil)
+    default:
+        q.state.Pass("", nil)
+    }
+}
+```
+
+Register it like any other state:
+
+```go
+hosts := NewQuorumState("upstreams", 3, 1)
+reg.Register(hosts)
+
+hosts.Mark("us-east-1", false)
+```
+
+### Display format
+
+`/state/display.json` and `/state/display.yaml` wrap the current state tree
+in a stable document that includes the registry's label hierarchy. A
+fleet-wide visualizer can merge many component documents by `label_path`.
+
+```yaml
+kind: statekit.state.v1
+label_path:
+  - name: service
+    value: checkout
+  - name: example
+    value: componentdemo
+states:
+  - name: checkout-api
+    status: warn
+    importance: important
+    message: "payments-upstream: failure ratio crossed warn threshold"
+    changed_at: 2026-05-16T00:58:30.966234+03:00
+    time_in_state_secs: 4
+    history:
+      - timestamp: 2026-05-16T00:58:25.258633+03:00
+        status: pass
+        secs_ago: 9
+      - timestamp: 2026-05-16T00:58:30.966234+03:00
+        status: warn
+        secs_ago: 4
+        message: "payments-upstream: failure ratio crossed warn threshold"
+    checks:
+      - name: database
+        status: pass
+        importance: important
+        changed_at: 2026-05-16T00:58:25.258633+03:00
+        time_in_state_secs: 9
+        history:
+          - timestamp: 2026-05-16T00:58:25.258633+03:00
+            status: pass
+            secs_ago: 9
+      - name: payments-upstream
+        status: warn
+        importance: important
+        message: failure ratio crossed warn threshold
+        data:
+          window: 5m0s
+          total: 3
+          failures: 1
+          passes: 2
+          fail_ratio: 0.3333333333333333
+        changed_at: 2026-05-16T00:58:25.258648+03:00
+        time_in_state_secs: 9
+        history:
+          - timestamp: 2026-05-16T00:58:25.258634+03:00
+            status: pass
+            secs_ago: 9
+          - timestamp: 2026-05-16T00:58:25.258648+03:00
+            status: warn
+            secs_ago: 9
+            message: failure ratio crossed warn threshold
+            data:
+              window: 5m0s
+              total: 3
+              failures: 1
+              passes: 2
+              fail_ratio: 0.3333333333333333
+```
+
+## Metrics
+
+Metrics live inside the component that produces them. Their values are
+useful in two directions: a Prometheus scrape exports them to your
+time-series store, and the component itself can read them directly to
+drive state evaluation or business logic.
+
+### Built-in collectors
+
+`Counter`, `Gauge`, `CounterVec`, and `GaugeVec` cover scalar and labeled
+cases:
+
+```go
+requests := statekit.NewCounterVec(
+    "http_requests_total",
+    "Total HTTP requests.",
+    "route",
+    "status",
+)
+inflight := statekit.NewGauge("http_inflight_requests", "In-flight HTTP requests.")
+
+reg.RegisterCollectors(requests, inflight)
+
+requests.WithLabelValues("/checkout", "200").Inc()
+inflight.Set(3)
+```
+
+### Custom collectors
+
+For anything richer, implement the two-method `PrometheusCollector`
+interface and the registry will export it. The collector exposes whatever
+local API the component needs. You can easily implement or adapt existing maps,
+histograms and variables to prometheus metrics, while keeping them useful locally.
+
+A sliding-window rate counter is a good example: it ages out old events on
+read, so its current value is meaningful both as a scrape sample and as a
+number the component can act on.
+
+> Note: this is just an illustration, not a production grade metric.
+
+```go
+// RateCounter counts events over a sliding window. Count() returns
+// the current value for local decisions; Prometheus scrapes the same
+// value through the collector interface.
+type RateCounter struct {
+    name, help string
+    window     time.Duration
+
+    mu     sync.Mutex
+    events []time.Time
+}
+
+func NewRateCounter(name, help string, window time.Duration) *RateCounter {
+    return &RateCounter{name: name, help: help, window: window}
+}
+
+func (c *RateCounter) Inc() {
+    c.mu.Lock()
+    defer c.mu.Unlock()
+    c.events = append(c.events, time.Now())
+}
+
+func (c *RateCounter) Count() int {
+    c.mu.Lock()
+    defer c.mu.Unlock()
+    cutoff := time.Now().Add(-c.window)
+    drop := 0
+    for drop < len(c.events) && c.events[drop].Before(cutoff) {
+        drop++
+    }
+    c.events = c.events[drop:]
+    return len(c.events)
+}
+
+func (c *RateCounter) DescribePrometheus() []statekit.PrometheusDesc {
+    return []statekit.PrometheusDesc{{Name: c.name, Help: c.help, Type: statekit.PrometheusGauge}}
+}
+
+func (c *RateCounter) CollectPrometheus() []statekit.PrometheusSample {
+    return []statekit.PrometheusSample{{Name: c.name, Value: float64(c.Count())}}
+}
+```
+
+Wire it up like any other collector:
+
+```go
+hits := NewRateCounter("hits_per_minute", "Requests in the last minute.", time.Minute)
+reg.RegisterCollectors(hits)
+
+hits.Inc()
+if hits.Count() > threshold {
+    state.Warn("traffic spike", nil)
+}
+```
 
 ## Demo
 
-Run the component demo to try manual states, aggregate state, counters, gauges,
-failure-ratio state, JSON snapshots, and Prometheus scraping:
+Run the component demo to try manual states, aggregate state, counters,
+gauges, failure-ratio state, JSON snapshots, and Prometheus scraping:
 
 ```sh
 go run ./examples/componentdemo

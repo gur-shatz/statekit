@@ -62,13 +62,15 @@ func (r *Registry) Register(s State) error {
 	return nil
 }
 
-func (r *Registry) RegisterCollector(c PrometheusCollector) error {
+func (r *Registry) RegisterCollectors(collectors ...PrometheusCollector) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.collectors = append(r.collectors, c)
-	for _, desc := range c.DescribePrometheus() {
-		if err := r.rememberDesc(desc); err != nil {
-			return err
+	for _, c := range collectors {
+		r.collectors = append(r.collectors, c)
+		for _, desc := range c.DescribePrometheus() {
+			if err := r.rememberDesc(desc); err != nil {
+				return err
+			}
 		}
 	}
 	return nil

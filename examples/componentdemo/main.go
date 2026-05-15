@@ -64,10 +64,7 @@ func newDemoComponent() *demoComponent {
 
 func (c *demoComponent) register(reg *statekit.Registry) {
 	must(reg.Register(c.app))
-	must(reg.RegisterCollector(c.requests))
-	must(reg.RegisterCollector(c.errors))
-	must(reg.RegisterCollector(c.queue))
-	must(reg.RegisterCollector(c.latency))
+	must(reg.RegisterCollectors(c.requests, c.errors, c.queue, c.latency))
 }
 
 func (c *demoComponent) view() demoView {

@@ -125,7 +125,7 @@ func TestRegistryEmitsStateAndCollectorPrometheus(t *testing.T) {
 
 	counter := NewCounter("queries_total", "Total queries.")
 	counter.Add(3)
-	if err := reg.RegisterCollector(counter); err != nil {
+	if err := reg.RegisterCollectors(counter); err != nil {
 		t.Fatal(err)
 	}
 
@@ -231,7 +231,7 @@ func TestRegistryPrometheusGroupsDescriptorsWithSamples(t *testing.T) {
 
 	counter := NewCounter("queries_total", "Total queries.")
 	counter.Add(3)
-	if err := reg.RegisterCollector(counter); err != nil {
+	if err := reg.RegisterCollectors(counter); err != nil {
 		t.Fatal(err)
 	}
 
@@ -306,10 +306,10 @@ func TestVecMetricsEmitLabeledSamples(t *testing.T) {
 	queue.WithLabelValues("default").Set(7)
 	queue.WithLabelValues("priority").Set(3)
 
-	if err := reg.RegisterCollector(requests); err != nil {
+	if err := reg.RegisterCollectors(requests); err != nil {
 		t.Fatal(err)
 	}
-	if err := reg.RegisterCollector(queue); err != nil {
+	if err := reg.RegisterCollectors(queue); err != nil {
 		t.Fatal(err)
 	}
 
@@ -378,10 +378,10 @@ func TestVecMetricsAddConcurrently(t *testing.T) {
 
 func TestRegistryRejectsConflictingDescriptorLabels(t *testing.T) {
 	reg := NewRegistry()
-	if err := reg.RegisterCollector(NewCounterVec("requests_total", "Total requests.", "route")); err != nil {
+	if err := reg.RegisterCollectors(NewCounterVec("requests_total", "Total requests.", "route")); err != nil {
 		t.Fatal(err)
 	}
-	if err := reg.RegisterCollector(NewCounterVec("requests_total", "Total requests.", "status")); err == nil {
+	if err := reg.RegisterCollectors(NewCounterVec("requests_total", "Total requests.", "status")); err == nil {
 		t.Fatal("registry accepted conflicting descriptor label names")
 	}
 }
