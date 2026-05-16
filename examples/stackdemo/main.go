@@ -228,12 +228,11 @@ func (m *mountedScraper) mount(mux *http.ServeMux, prefix string) {
 func main() {
 	listenAddr := flag.String("addr", defaultAddr, "address to listen on")
 	killURL := flag.Bool("kill-url", false, "enable GET /-/quit to stop the demo process")
+	configDir := flag.String("config-dir", filepath.Join("examples", "stackdemo", "config"), "directory containing scraper config YAML files")
 	flag.Parse()
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
-
-	configDir := filepath.Join("examples", "stackdemo", "config")
 	mux := http.NewServeMux()
 
 	leaves := []*leafComponent{
@@ -246,14 +245,17 @@ func main() {
 		leaf.mount(mux)
 	}
 
-	east := newMountedScraper("regional-east", filepath.Join(configDir, "scraper-east.yaml"), "regional")
-	west := newMountedScraper("regional-west", filepath.Join(configDir, "scraper-west.yaml"), "regional")
-	fleet := newMountedScraper("fleet-aggregator", filepath.Join(configDir, "fleet-aggregator.yaml"), "fleet")
+	east := newMountedScraper("regional-east", filepath.Join(*configDir, "scraper-east.yaml"), "regional")
+	west := newMountedScraper("regional-west", filepath.Join(*configDir, "scraper-west.yaml"), "regional")
+	fleet := newMountedScraper("fleet-aggregator", filepath.Join(*configDir, "fleet-aggregator.yaml"), "fleet")
 	east.mount(mux, "/scraper/east")
 	west.mount(mux, "/scraper/west")
 	fleet.mount(mux, "/fleet")
 
-	store := storage.NewMemoryStore()
+	store := storage.NewMemoryStore(storage.WithDocumentCache(
+		storage.NewFreecacheDocumentCache[statekit.StateDisplayDocument](32<<20),
+		5*time.Minute,
+	))
 	api := storage.NewAPI(store)
 	mux.Handle("/api/", http.StripPrefix("/api", api.Handler()))
 	mux.Handle("/storage/", http.StripPrefix("/storage", storage.UIHandler(storage.UIOptions{APIBase: "/api"})))

@@ -1,3 +1,4 @@
 .cache/
 TODO.md
 examples/*/bin/
+examples/*/execrun.sum

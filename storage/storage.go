@@ -22,6 +22,7 @@ type Store interface {
 	Current(ctx context.Context, filter CurrentFilter) ([]CurrentState, error)
 	Groups(ctx context.Context, query GroupQuery) ([]GroupBucket, error)
 	Events(ctx context.Context, filter EventFilter) ([]StateEvent, error)
+	Targets(ctx context.Context) ([]TargetDocument, error)
 }
 
 type StateNode struct {
@@ -66,6 +67,52 @@ type StateEvent struct {
 	Data       map[string]any `json:"data,omitempty"`
 }
 
+type TargetDocument struct {
+	Key            string            `json:"key"`
+	Name           string            `json:"name"`
+	ScrapePath     string            `json:"scrape_path"`
+	Labels         map[string]string `json:"labels,omitempty"`
+	WorstStatus    string            `json:"worst_status"`
+	StatusCounts   map[string]int    `json:"status_counts"`
+	AffectedStates []AffectedState   `json:"affected_states,omitempty"`
+	MaterialHash   string            `json:"material_hash"`
+	ObservedAt     time.Time         `json:"observed_at"`
+	States         []TargetState     `json:"states"`
+}
+
+type TargetState struct {
+	Identity   string            `json:"identity"`
+	Name       string            `json:"name"`
+	Status     string            `json:"status"`
+	Reason     string            `json:"reason,omitempty"`
+	Importance string            `json:"importance"`
+	Help       string            `json:"help,omitempty"`
+	GroupName  string            `json:"group_name,omitempty"`
+	Labels     map[string]string `json:"labels,omitempty"`
+	ChangedAt  time.Time         `json:"changed_at"`
+	ObservedAt time.Time         `json:"observed_at"`
+	Checks     []TargetCheck     `json:"checks,omitempty"`
+}
+
+type TargetCheck struct {
+	Identity   string            `json:"identity"`
+	Name       string            `json:"name"`
+	Status     string            `json:"status"`
+	Reason     string            `json:"reason,omitempty"`
+	Importance string            `json:"importance"`
+	Help       string            `json:"help,omitempty"`
+	Labels     map[string]string `json:"labels,omitempty"`
+	ChangedAt  time.Time         `json:"changed_at"`
+	ObservedAt time.Time         `json:"observed_at"`
+}
+
+type AffectedState struct {
+	Name      string    `json:"name"`
+	Status    string    `json:"status"`
+	Reason    string    `json:"reason,omitempty"`
+	ChangedAt time.Time `json:"changed_at"`
+}
+
 type CurrentFilter struct {
 	Status    string            `json:"status,omitempty"`
 	GroupName string            `json:"group_name,omitempty"`
@@ -90,26 +137,47 @@ type EventFilter struct {
 }
 
 type MemoryStore struct {
-	mu      sync.RWMutex
-	nodes   map[string]StateNode
-	current map[string]CurrentObservation
-	events  map[string]StateEvent
-	order   []string
+	mu       sync.RWMutex
+	nodes    map[string]StateNode
+	current  map[string]CurrentObservation
+	events   map[string]StateEvent
+	order    []string
+	targets  map[string]TargetDocument
+	docCache DocumentCache[statekit.StateDisplayDocument]
+	docTTL   time.Duration
 }
 
-func NewMemoryStore() *MemoryStore {
-	return &MemoryStore{
+type MemoryStoreOption func(*MemoryStore)
+
+func WithDocumentCache(cache DocumentCache[statekit.StateDisplayDocument], ttl time.Duration) MemoryStoreOption {
+	return func(s *MemoryStore) {
+		s.docCache = cache
+		s.docTTL = ttl
+	}
+}
+
+func NewMemoryStore(opts ...MemoryStoreOption) *MemoryStore {
+	store := &MemoryStore{
 		nodes:   map[string]StateNode{},
 		current: map[string]CurrentObservation{},
 		events:  map[string]StateEvent{},
+		targets: map[string]TargetDocument{},
 	}
+	for _, opt := range opts {
+		opt(store)
+	}
+	return store
 }
 
-func (s *MemoryStore) IngestDocument(_ context.Context, doc statekit.StateDisplayDocument, observedAt time.Time) error {
+func (s *MemoryStore) IngestDocument(ctx context.Context, doc statekit.StateDisplayDocument, observedAt time.Time) error {
 	if observedAt.IsZero() {
 		observedAt = time.Now()
 	}
+	if err := s.cacheDocument(ctx, doc); err != nil {
+		return err
+	}
 	entries := flattenDocument(doc, observedAt)
+	targets := buildTargetDocuments(entries)
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -124,7 +192,24 @@ func (s *MemoryStore) IngestDocument(_ context.Context, doc statekit.StateDispla
 			s.order = append(s.order, entry.Event.EventKey)
 		}
 	}
+	for _, target := range targets {
+		s.targets[target.Key] = target
+	}
 	return nil
+}
+
+func (s *MemoryStore) CachedDocumentYAML(ctx context.Context, key string) ([]byte, bool, error) {
+	if s.docCache == nil {
+		return nil, false, nil
+	}
+	return s.docCache.GetYAML(ctx, key)
+}
+
+func (s *MemoryStore) cacheDocument(ctx context.Context, doc statekit.StateDisplayDocument) error {
+	if s.docCache == nil {
+		return nil
+	}
+	return s.docCache.Set(ctx, StateDisplayDocumentKey(doc), doc, s.docTTL)
 }
 
 func (s *MemoryStore) Current(_ context.Context, filter CurrentFilter) ([]CurrentState, error) {
@@ -206,6 +291,23 @@ func (s *MemoryStore) Events(_ context.Context, filter EventFilter) ([]StateEven
 	return out, nil
 }
 
+func (s *MemoryStore) Targets(_ context.Context) ([]TargetDocument, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	out := make([]TargetDocument, 0, len(s.targets))
+	for _, target := range s.targets {
+		out = append(out, target)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if statusRank(out[i].WorstStatus) != statusRank(out[j].WorstStatus) {
+			return statusRank(out[i].WorstStatus) > statusRank(out[j].WorstStatus)
+		}
+		return out[i].Name < out[j].Name
+	})
+	return out, nil
+}
+
 type flattenedState struct {
 	Node    StateNode
 	Current CurrentObservation
@@ -218,6 +320,13 @@ func flattenDocument(doc statekit.StateDisplayDocument, observedAt time.Time) []
 		out = append(out, flattenSnapshot(doc.LabelPath, nil, "", nil, "", "", state, observedAt)...)
 	}
 	return out
+}
+
+func StateDisplayDocumentKey(doc statekit.StateDisplayDocument) string {
+	return hashJSON(map[string]any{
+		"kind":       doc.Kind,
+		"label_path": doc.LabelPath,
+	})
 }
 
 func flattenSnapshot(labelPath []statekit.StateDisplayLabel, path []string, parentIdentity string, inheritedLabels map[string]string, inheritedScrapedFrom, inheritedScrapePath string, snap statekit.Snapshot, observedAt time.Time) []flattenedState {

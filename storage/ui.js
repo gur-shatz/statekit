@@ -3,6 +3,7 @@ const statusOrder = ["pass", "warn", "fail", "down"];
 
 const state = {
   status: "",
+  projectionMode: "server",
   selectedTarget: "",
   current: [],
   events: [],
@@ -27,13 +28,14 @@ async function fetchJSON(path) {
 
 async function refresh() {
   $("lastRefresh").textContent = "Refreshing...";
-  const [current, events] = await Promise.all([
+  const [current, events, serverTargets] = await Promise.all([
     fetchJSON("/state/current"),
     fetchJSON("/state/events?limit=100"),
+    fetchJSON("/state/targets"),
   ]);
   state.current = current;
   state.events = events;
-  state.targets = buildTargets(current);
+  state.targets = state.projectionMode === "server" ? normalizeServerTargets(serverTargets) : buildTargets(current);
   if (!state.selectedTarget && state.targets.length) state.selectedTarget = state.targets[0].key;
   if (state.selectedTarget && !state.targets.some((t) => t.key === state.selectedTarget)) {
     state.selectedTarget = state.targets[0]?.key || "";
@@ -92,6 +94,62 @@ function buildTargets(items) {
     });
 }
 
+function normalizeServerTargets(items) {
+  return (items || []).map((item) => ({
+    key: item.key,
+    name: item.name,
+    scrapePath: item.scrape_path || item.name,
+    labels: item.labels || {},
+    states: (item.states || []).map(normalizeServerState),
+    counts: {
+      pass: item.status_counts?.pass || 0,
+      warn: item.status_counts?.warn || 0,
+      fail: item.status_counts?.fail || 0,
+      down: item.status_counts?.down || 0,
+    },
+    worstStatus: item.worst_status || "pass",
+    observedAt: item.observed_at || "",
+    affectedStates: item.affected_states || [],
+    materialHash: item.material_hash || "",
+  })).sort((a, b) => {
+    const byStatus = rank(b.worstStatus) - rank(a.worstStatus);
+    if (byStatus) return byStatus;
+    return a.name.localeCompare(b.name);
+  });
+}
+
+function normalizeServerState(item) {
+  return {
+    identity: item.identity,
+    name: item.name,
+    group_name: item.group_name || "",
+    labels: item.labels || {},
+    observation: {
+      status: item.status || "pass",
+      reason: item.reason || "",
+      changed_at: item.changed_at || "",
+      changed_secs_ago: secondsSince(item.changed_at),
+      observed_at: item.observed_at || "",
+    },
+    checks: (item.checks || []).map(normalizeServerCheck),
+  };
+}
+
+function normalizeServerCheck(item) {
+  return {
+    identity: item.identity,
+    name: item.name,
+    labels: item.labels || {},
+    observation: {
+      status: item.status || "pass",
+      reason: item.reason || "",
+      changed_at: item.changed_at || "",
+      changed_secs_ago: secondsSince(item.changed_at),
+      observed_at: item.observed_at || "",
+    },
+  };
+}
+
 function targetFor(item) {
   const name = item.scraped_from || item.labels?.target_id || "";
   const scrapePath = item.scrape_path || name;
@@ -123,7 +181,7 @@ function render() {
   renderTargets();
   renderStates();
   renderEvents();
-  $("lastRefresh").textContent = `Updated ${new Date().toLocaleTimeString()}`;
+  $("lastRefresh").textContent = `Updated ${new Date().toLocaleTimeString()} from ${state.projectionMode}`;
 }
 
 function renderTotals() {
@@ -175,7 +233,7 @@ function renderTargets() {
 }
 
 function affectedChip(item) {
-  const status = item.observation?.status || "pass";
+  const status = item.observation?.status || item.status || "pass";
   return `<span class="chip ${esc(status)} truncate">${esc(item.name)}: ${esc(status)}</span>`;
 }
 
@@ -200,7 +258,7 @@ function renderStates() {
 
 function stateCard(target, item) {
   const obs = item.observation || {};
-  const checks = (target.checksByParent.get(item.identity) || []).slice().sort(compareStates);
+  const checks = checksForState(target, item).slice().sort(compareStates);
   const reason = obs.reason ? `<div class="reason truncate">${esc(obs.reason)}</div>` : "";
   const labels = stateLabels(item);
   return `<article class="stateCard">
@@ -219,6 +277,11 @@ function stateCard(target, item) {
     </div>
     ${checks.length ? `<div class="checks">${checks.map(checkRow).join("")}</div>` : ""}
   </article>`;
+}
+
+function checksForState(target, item) {
+  if (item.checks) return item.checks;
+  return target.checksByParent?.get(item.identity) || [];
 }
 
 function stateLabels(item) {
@@ -256,7 +319,7 @@ function renderEvents() {
   }
   const ids = new Set([
     ...target.states.map((item) => item.identity),
-    ...[...target.checksByParent.values()].flat().map((item) => item.identity),
+    ...target.states.flatMap((item) => checksForState(target, item)).map((item) => item.identity),
   ]);
   const byIdentity = new Map(state.current.map((item) => [item.identity, item]));
   const rows = state.events
@@ -296,6 +359,13 @@ function formatAge(value) {
   return `${Math.floor(hours / 24)}d`;
 }
 
+function secondsSince(value) {
+  if (!value) return "";
+  const timestamp = Date.parse(value);
+  if (Number.isNaN(timestamp)) return "";
+  return Math.max(0, Math.floor((Date.now() - timestamp) / 1000));
+}
+
 function showError(err) {
   $("lastRefresh").textContent = err.message;
 }
@@ -303,6 +373,10 @@ function showError(err) {
 $("statusFilter").addEventListener("change", (e) => {
   state.status = e.target.value;
   render();
+});
+$("projectionMode").addEventListener("change", (e) => {
+  state.projectionMode = e.target.value;
+  refresh().catch(showError);
 });
 $("refresh").addEventListener("click", () => refresh().catch(showError));
 

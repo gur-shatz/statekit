@@ -2,7 +2,6 @@ PORT           ?= 19080
 SCRAPER_PORT   ?= 19081
 STACKDEMO_PORT ?= 19110
 STACKDEMO_FLAGS ?= -kill-url
-GOCACHE        ?= $(CURDIR)/.cache/go-build
 
 RUNCTL ?= go run github.com/gur-shatz/go-run/cmd/runctl@latest
 RUNCTL_FLAGS ?= -ui
@@ -30,29 +29,28 @@ help:
 	@echo "  RUNCTL=$(RUNCTL)"
 	@echo "                       (override to use a locally-installed runctl binary)"
 	@echo "  RUNCTL_FLAGS=$(RUNCTL_FLAGS)         Extra flags passed to runctl"
-	@echo "  GOCACHE=$(GOCACHE)"
 
 fmt:
 	gofmt -w $$(find . -name '*.go' -not -path './.git/*')
 
 test:
-	GOCACHE=$(GOCACHE) go test ./...
+	go test ./...
 
 runctl: demo-fleet
 
 demo: demo-fleet
 
 demo-component:
-	cd examples/componentdemo && GOCACHE=$(GOCACHE) PORT=$(PORT) $(RUNCTL) $(RUNCTL_FLAGS) -config runctl.yaml
+	cd examples/componentdemo && PORT=$(PORT) $(RUNCTL) $(RUNCTL_FLAGS) -config runctl.yaml
 
 demo-scraper:
-	cd examples/scrapedemo && GOCACHE=$(GOCACHE) PORT=$(SCRAPER_PORT) SOURCE_PORT=$(PORT) $(RUNCTL) $(RUNCTL_FLAGS) -config runctl.yaml
+	cd examples/scrapedemo && PORT=$(SCRAPER_PORT) SOURCE_PORT=$(PORT) $(RUNCTL) $(RUNCTL_FLAGS) -config runctl.yaml
 
 demo-fleet:
-	cd examples/fleetdemo && GOCACHE=$(GOCACHE) $(RUNCTL) $(RUNCTL_FLAGS) -config runctl.yaml
+	cd examples/fleetdemo && $(RUNCTL) $(RUNCTL_FLAGS) -config runctl.yaml
 
 demo-stack:
-	cd examples/stackdemo && GOCACHE=$(GOCACHE) PORT=$(STACKDEMO_PORT) FLAGS="$(STACKDEMO_FLAGS)" $(RUNCTL) $(RUNCTL_FLAGS) -config runctl.yaml
+	cd examples/stackdemo && PORT=$(STACKDEMO_PORT) FLAGS="$(STACKDEMO_FLAGS)" $(RUNCTL) $(RUNCTL_FLAGS) -config runctl.yaml
 
 demo-urls:
 	@echo "componentdemo:"

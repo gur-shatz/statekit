@@ -51,6 +51,19 @@ paths:
                 type: array
                 items:
                   $ref: '#/components/schemas/CurrentState'
+  /state/targets:
+    get:
+      summary: List target material documents
+      description: Returns target-oriented current state documents with summary fields for UI and durable flush decisions.
+      responses:
+        '200':
+          description: Target documents
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/TargetDocument'
   /state/groups:
     get:
       summary: Group current states
@@ -245,6 +258,110 @@ components:
           type: integer
         worst_status:
           type: string
+    TargetDocument:
+      type: object
+      properties:
+        key:
+          type: string
+        name:
+          type: string
+        scrape_path:
+          type: string
+        labels:
+          type: object
+          additionalProperties:
+            type: string
+        worst_status:
+          type: string
+          enum: [pass, warn, fail, down]
+        status_counts:
+          type: object
+          additionalProperties:
+            type: integer
+        affected_states:
+          type: array
+          items:
+            $ref: '#/components/schemas/AffectedState'
+        material_hash:
+          type: string
+        observed_at:
+          type: string
+          format: date-time
+        states:
+          type: array
+          items:
+            $ref: '#/components/schemas/TargetState'
+    TargetState:
+      type: object
+      properties:
+        identity:
+          type: string
+        name:
+          type: string
+        status:
+          type: string
+          enum: [pass, warn, fail, down]
+        reason:
+          type: string
+        importance:
+          type: string
+        help:
+          type: string
+        group_name:
+          type: string
+        labels:
+          type: object
+          additionalProperties:
+            type: string
+        changed_at:
+          type: string
+          format: date-time
+        observed_at:
+          type: string
+          format: date-time
+        checks:
+          type: array
+          items:
+            $ref: '#/components/schemas/TargetCheck'
+    TargetCheck:
+      type: object
+      properties:
+        identity:
+          type: string
+        name:
+          type: string
+        status:
+          type: string
+          enum: [pass, warn, fail, down]
+        reason:
+          type: string
+        importance:
+          type: string
+        help:
+          type: string
+        labels:
+          type: object
+          additionalProperties:
+            type: string
+        changed_at:
+          type: string
+          format: date-time
+        observed_at:
+          type: string
+          format: date-time
+    AffectedState:
+      type: object
+      properties:
+        name:
+          type: string
+        status:
+          type: string
+          enum: [pass, warn, fail, down]
+        reason:
+          type: string
+        changed_at:
+          type: string
+          format: date-time
     StateEvent:
       type: object
       properties:

@@ -83,6 +83,78 @@ func TestMemoryStoreEventsAreDedupedByTransition(t *testing.T) {
 	}
 }
 
+func TestMemoryStoreBuildsTargetDocuments(t *testing.T) {
+	store := NewMemoryStore()
+	doc := testDocument()
+	if err := store.IngestDocument(context.Background(), doc, time.Date(2026, 5, 16, 12, 0, 0, 0, time.UTC)); err != nil {
+		t.Fatal(err)
+	}
+
+	targets, err := store.Targets(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(targets) != 1 {
+		t.Fatalf("targets len = %d, want 1: %+v", len(targets), targets)
+	}
+	target := targets[0]
+	if target.Name != "issuer-east" || target.ScrapePath != "scraper > issuer-east" {
+		t.Fatalf("target identity = %q %q", target.Name, target.ScrapePath)
+	}
+	if target.WorstStatus != "warn" || target.StatusCounts["warn"] != 1 {
+		t.Fatalf("summary = worst %q counts %+v", target.WorstStatus, target.StatusCounts)
+	}
+	if len(target.AffectedStates) != 1 || target.AffectedStates[0].Name != "checkout-api" {
+		t.Fatalf("affected = %+v", target.AffectedStates)
+	}
+	if len(target.States) != 1 || target.States[0].Name != "checkout-api" {
+		t.Fatalf("states = %+v", target.States)
+	}
+	if len(target.States[0].Checks) != 1 || target.States[0].Checks[0].Name != "database" {
+		t.Fatalf("checks = %+v", target.States[0].Checks)
+	}
+
+	doc.States[0].ChangedSecsAgo += 10
+	if err := store.IngestDocument(context.Background(), doc, time.Date(2026, 5, 16, 12, 1, 0, 0, time.UTC)); err != nil {
+		t.Fatal(err)
+	}
+	targets, err = store.Targets(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if targets[0].MaterialHash != target.MaterialHash {
+		t.Fatalf("material hash changed for volatile changed_secs_ago: %q != %q", targets[0].MaterialHash, target.MaterialHash)
+	}
+}
+
+func TestMemoryStoreCachesZstdYAMLDocument(t *testing.T) {
+	cache := NewFreecacheDocumentCache[statekit.StateDisplayDocument](1 << 20)
+	store := NewMemoryStore(WithDocumentCache(cache, time.Minute))
+	doc := testDocument()
+	if err := store.IngestDocument(context.Background(), doc, time.Date(2026, 5, 16, 12, 0, 0, 0, time.UTC)); err != nil {
+		t.Fatal(err)
+	}
+
+	data, ok, err := store.CachedDocumentYAML(context.Background(), StateDisplayDocumentKey(doc))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok {
+		t.Fatal("cached document missing")
+	}
+	text := string(data)
+	if !strings.Contains(text, "kind: statekit.state.v1") || !strings.Contains(text, "checkout-api") {
+		t.Fatalf("cached yaml = %s", text)
+	}
+	cachedDoc, ok, err := cache.Get(context.Background(), StateDisplayDocumentKey(doc))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok || cachedDoc.States[0].Name != "checkout-api" {
+		t.Fatalf("cached doc = %+v, ok=%v", cachedDoc, ok)
+	}
+}
+
 func TestAPIExposesCurrentGroupsEventsAndOpenAPI(t *testing.T) {
 	store := NewMemoryStore()
 	if err := store.IngestDocument(context.Background(), testDocument(), time.Date(2026, 5, 16, 12, 0, 0, 0, time.UTC)); err != nil {
@@ -158,6 +230,28 @@ states:
 	}
 	if len(current) != 1 || current[0].Name != "database" {
 		t.Fatalf("current = %+v", current)
+	}
+}
+
+func TestAPIExposesTargets(t *testing.T) {
+	store := NewMemoryStore()
+	if err := store.IngestDocument(context.Background(), testDocument(), time.Date(2026, 5, 16, 12, 0, 0, 0, time.UTC)); err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(NewAPI(store).Handler())
+	defer server.Close()
+
+	resp, err := http.Get(server.URL + "/state/targets")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var targets []TargetDocument
+	if err := json.NewDecoder(resp.Body).Decode(&targets); err != nil {
+		t.Fatal(err)
+	}
+	if len(targets) != 1 || targets[0].Name != "issuer-east" {
+		t.Fatalf("targets = %+v", targets)
 	}
 }
 

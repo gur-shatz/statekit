@@ -9,14 +9,17 @@ watch:
   - "*.go"
   - "*.html"
   - "config/*.yaml"
+  - "config/*.yml"
   - "../../*.go"
   - "../../scraper/*.go"
   - "../../storage/*.go"
   - "../../go.mod"
   - "../../go.sum"
+  - "../../*.js"
+  - "../../*.html"
 
 build:
   - go build -o ./bin/stackdemo .
 
 exec:
-  - ./bin/stackdemo -addr={{ .ADDR }} {{ .FLAGS }}
+  - ./bin/stackdemo -addr={{ .ADDR }} -config-dir=config {{ .FLAGS }}

@@ -27,6 +27,7 @@ func (a *API) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /openapi.yaml", a.handleOpenAPI)
 	mux.HandleFunc("GET /state/current", a.handleCurrent)
+	mux.HandleFunc("GET /state/targets", a.handleTargets)
 	mux.HandleFunc("GET /state/groups", a.handleGroups)
 	mux.HandleFunc("GET /state/events", a.handleEvents)
 	mux.HandleFunc("POST /state/doc", a.handleIngestDocument)
@@ -45,6 +46,11 @@ func (a *API) handleOpenAPI(w http.ResponseWriter, _ *http.Request) {
 
 func (a *API) handleCurrent(w http.ResponseWriter, r *http.Request) {
 	items, err := a.store.Current(r.Context(), filterFromRequest(r))
+	writeJSON(w, items, err)
+}
+
+func (a *API) handleTargets(w http.ResponseWriter, r *http.Request) {
+	items, err := a.store.Targets(r.Context())
 	writeJSON(w, items, err)
 }
 
