@@ -9,8 +9,8 @@ type stateTracker struct {
 	importance Importance
 	help       string
 	status     Status
-	message    string
-	data       any
+	reason     string
+	data       map[string]any
 	changedAt  time.Time
 	history    []HistoryEntry
 	maxHistory int
@@ -34,8 +34,11 @@ func newStateTracker(name string, importance Importance, help string, now clock)
 	}
 }
 
-func (t *stateTracker) set(status Status, message string, data any) {
-	if status == t.status && message == t.message {
+func (t *stateTracker) set(status Status, reason string, data map[string]any) {
+	if status == Pass {
+		reason = ""
+	}
+	if status == t.status && reason == t.reason {
 		return
 	}
 	now := t.now()
@@ -43,14 +46,14 @@ func (t *stateTracker) set(status Status, message string, data any) {
 	t.history = append(t.history, HistoryEntry{
 		Timestamp: now,
 		Status:    status,
-		Message:   message,
+		Reason:    reason,
 		Data:      data,
 	})
 	if len(t.history) > t.maxHistory {
 		t.history = t.history[len(t.history)-t.maxHistory:]
 	}
 	t.status = status
-	t.message = message
+	t.reason = reason
 	t.data = data
 }
 
@@ -64,15 +67,15 @@ func (t *stateTracker) snapshot(children []Snapshot) Snapshot {
 	checks := make([]Snapshot, len(children))
 	copy(checks, children)
 	return Snapshot{
-		Name:            t.name,
-		Status:          t.status,
-		Importance:      t.importance,
-		Help:            t.help,
-		Message:         t.message,
-		Data:            t.data,
-		ChangedAt:       t.changedAt,
-		TimeInStateSecs: int64(now.Sub(t.changedAt).Seconds()),
-		History:         history,
-		Checks:          checks,
+		Name:           t.name,
+		Status:         t.status,
+		Importance:     t.importance,
+		Help:           t.help,
+		Reason:         t.reason,
+		Data:           t.data,
+		ChangedAt:      t.changedAt,
+		ChangedSecsAgo: int64(now.Sub(t.changedAt).Seconds()),
+		History:        history,
+		Checks:         checks,
 	}
 }

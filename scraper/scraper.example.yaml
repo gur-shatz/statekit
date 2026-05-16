@@ -79,7 +79,7 @@ targets:
           recover_after: 1
 
     state_aggregation:
-      path: /state.yaml
+      path: /state
       labels:
         subsystem: issuer
 

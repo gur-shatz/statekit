@@ -23,7 +23,7 @@ shape of the scraper output (multiple targets, per-target labels,
 go run ./examples/fleetdemo
 
 # Aggregated state:
-curl -s http://localhost:19084/state/display.yaml
+curl -s http://localhost:19084/state
 
 # Aggregated metrics (Prometheus text):
 curl -s http://localhost:19084/metrics
@@ -36,13 +36,13 @@ state mirrors that.
 
 ## What to look for
 
-In `/state/display.yaml`:
+In `/state`:
 
 ```yaml
 states:
   - name: scraper
     status: warn
-    message: "issuer-west.state: worst child = warn"
+    reason: "issuer-west.state: worst child = warn"
     checks:
       - name: issuer-east.up      # liveness probe — pass
       - name: issuer-east.state   # remote tree — pass

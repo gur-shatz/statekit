@@ -93,20 +93,20 @@ func (c *demoComponent) handleSetState(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	message := strings.TrimSpace(r.FormValue("message"))
-	if message == "" {
-		message = status.String()
+	reason := strings.TrimSpace(r.FormValue("reason"))
+	if reason == "" {
+		reason = status.String()
 	}
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	switch target {
 	case "database":
-		c.database.Set(status, message, nil)
+		c.database.Set(status, reason, nil)
 	case "cache":
-		c.cache.Set(status, message, nil)
+		c.cache.Set(status, reason, nil)
 	case "worker":
-		c.worker.Set(status, message, nil)
+		c.worker.Set(status, reason, nil)
 	default:
 		http.Error(w, "unknown state target", http.StatusBadRequest)
 		return
@@ -193,9 +193,7 @@ func main() {
 	mux.HandleFunc("POST /state", component.handleSetState)
 	mux.HandleFunc("POST /outcome", component.handleRecordOutcome)
 	mux.HandleFunc("POST /metric", component.handleSetMetric)
-	mux.Handle("/state", reg.JSONHandler())
-	mux.Handle("/state/display.json", reg.StateDisplayJSONHandler())
-	mux.Handle("/state/display.yaml", reg.StateDisplayYAMLHandler())
+	mux.Handle("/state", reg.StateDisplayYAMLHandler())
 	mux.Handle("/metrics", reg.PrometheusHandler())
 
 	port := os.Getenv("PORT")

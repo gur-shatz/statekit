@@ -170,26 +170,32 @@ func parseImportance(s string) (Importance, error) {
 
 // HistoryEntry records a state transition.
 type HistoryEntry struct {
-	Timestamp time.Time `json:"timestamp" yaml:"timestamp"`
-	Status    Status    `json:"status" yaml:"status"`
-	SecsAgo   int64     `json:"secs_ago" yaml:"secs_ago"`
-	Message   string    `json:"message,omitempty" yaml:"message,omitempty"`
-	Data      any       `json:"data,omitempty" yaml:"data,omitempty"`
+	Timestamp time.Time      `json:"timestamp" yaml:"timestamp"`
+	Status    Status         `json:"status" yaml:"status"`
+	SecsAgo   int64          `json:"secs_ago" yaml:"secs_ago"`
+	Reason    string         `json:"reason,omitempty" yaml:"reason,omitempty"`
+	Data      map[string]any `json:"data,omitempty" yaml:"data,omitempty"`
 }
 
 // Snapshot is an immutable point-in-time view of a State.
+//
+// Data is inlined into the YAML output: the map's keys appear as
+// siblings of the snapshot's own fields rather than nested under
+// "data:". This keeps things like a liveness probe's updated_at,
+// latency_ms, etc. at the same depth as changed_at.
 type Snapshot struct {
-	ScrapedFrom     string         `json:"_scraped_from,omitempty" yaml:"_scraped_from,omitempty"`
-	Name            string         `json:"name" yaml:"name"`
-	Status          Status         `json:"status" yaml:"status"`
-	Importance      Importance     `json:"importance" yaml:"importance"`
-	Help            string         `json:"help,omitempty" yaml:"help,omitempty"`
-	Message         string         `json:"message,omitempty" yaml:"message,omitempty"`
-	Data            any            `json:"data,omitempty" yaml:"data,omitempty"`
-	ChangedAt       time.Time      `json:"changed_at" yaml:"changed_at"`
-	TimeInStateSecs int64          `json:"time_in_state_secs" yaml:"time_in_state_secs"`
-	History         []HistoryEntry `json:"history,omitempty" yaml:"history,omitempty"`
-	Checks          []Snapshot     `json:"checks,omitempty" yaml:"checks,omitempty"`
+	Name           string         `json:"name" yaml:"name"`
+	ScrapedFrom    string         `json:"scraped_from,omitempty" yaml:"scraped_from,omitempty"`
+	ScrapePath     string         `json:"scrape_path,omitempty" yaml:"scrape_path,omitempty"`
+	Status         Status         `json:"status" yaml:"status"`
+	Importance     Importance     `json:"importance" yaml:"importance"`
+	Help           string         `json:"help,omitempty" yaml:"help,omitempty"`
+	Reason         string         `json:"reason,omitempty" yaml:"reason,omitempty"`
+	Data           map[string]any `json:"data,omitempty" yaml:",inline,omitempty"`
+	ChangedAt      time.Time      `json:"changed_at" yaml:"changed_at"`
+	ChangedSecsAgo int64          `json:"changed_secs_ago" yaml:"changed_secs_ago"`
+	History        []HistoryEntry `json:"history,omitempty" yaml:"history,omitempty"`
+	Checks         []Snapshot     `json:"checks,omitempty" yaml:"checks,omitempty"`
 }
 
 // State is the central interface. Implementations own their concurrency,

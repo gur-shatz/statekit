@@ -20,26 +20,26 @@ func (s *ManualState) Name() string {
 	return s.tracker.name
 }
 
-func (s *ManualState) Set(status Status, message string, data any) {
+func (s *ManualState) Set(status Status, reason string, data map[string]any) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.tracker.set(status, message, data)
+	s.tracker.set(status, reason, data)
 }
 
-func (s *ManualState) Pass(message string, data any) {
-	s.Set(Pass, message, data)
+func (s *ManualState) Pass(reason string, data map[string]any) {
+	s.Set(Pass, reason, data)
 }
 
-func (s *ManualState) Warn(message string, data any) {
-	s.Set(Warn, message, data)
+func (s *ManualState) Warn(reason string, data map[string]any) {
+	s.Set(Warn, reason, data)
 }
 
-func (s *ManualState) Fail(message string, data any) {
-	s.Set(Fail, message, data)
+func (s *ManualState) Fail(reason string, data map[string]any) {
+	s.Set(Fail, reason, data)
 }
 
-func (s *ManualState) Down(message string, data any) {
-	s.Set(Down, message, data)
+func (s *ManualState) Down(reason string, data map[string]any) {
+	s.Set(Down, reason, data)
 }
 
 func (s *ManualState) Snapshot() Snapshot {

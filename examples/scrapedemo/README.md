@@ -26,7 +26,7 @@ go run ./examples/scrapedemo
 # listening on http://localhost:19081
 
 # In another shell, look at the aggregated output:
-curl -s http://localhost:19081/state/display.yaml
+curl -s http://localhost:19081/state
 curl -s http://localhost:19081/metrics
 ```
 
@@ -41,7 +41,7 @@ If `componentdemo` is on a different port, update `base_url` in
 
 While both demos are running, hit `componentdemo`'s web UI at
 `http://localhost:19080/` to flip states and update metrics. Then
-refetch the scraper's `/state/display.yaml` within a few seconds and
+refetch the scraper's `/state` within a few seconds and
 watch the changes propagate through `issuer.state`.
 
 ## See also

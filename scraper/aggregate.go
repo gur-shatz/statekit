@@ -2,11 +2,9 @@ package scraper
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
-	"strings"
 	"sync"
 	"time"
 
@@ -16,8 +14,8 @@ import (
 
 // remoteStateMirror is the statekit.State exposed for one target's
 // state_aggregation task. Its Snapshot is the remote's first top-level
-// scraped state, annotated with _scraped_from (prepending the target
-// identifier; existing _scraped_from chains accumulate).
+// scraped state, annotated with scraped_from (prepending the target
+// identifier; existing scraped_from chains accumulate).
 //
 // Before the first successful scrape (or after expiration), Snapshot
 // returns a synthetic Down placeholder named after the target.
@@ -54,7 +52,7 @@ func (this *remoteStateMirror) Snapshot() statekit.Snapshot {
 			Name:        this.source,
 			Status:      statekit.Down,
 			Importance:  statekit.Important,
-			Message:     "no successful scrape yet",
+			Reason:      "no successful scrape yet",
 			ChangedAt:   time.Now(),
 		}
 	}
@@ -62,7 +60,7 @@ func (this *remoteStateMirror) Snapshot() statekit.Snapshot {
 	if this.expiration > 0 && time.Since(this.fetchedAt) > this.expiration {
 		snap := this.scraped
 		snap.Status = statekit.Down
-		snap.Message = "stale (no scrape within expiration)"
+		snap.Reason = "stale (no scrape within expiration)"
 		return snap
 	}
 
@@ -73,7 +71,7 @@ func (this *remoteStateMirror) setSuccess(doc statekit.StateDisplayDocument) {
 	if len(doc.States) == 0 {
 		return
 	}
-	annotated := annotateScrapedFrom(doc.States[0], this.source)
+	annotated := annotateScrape(doc.States[0], this.source)
 	this.mu.Lock()
 	this.scraped = annotated
 	this.hasData = true
@@ -87,15 +85,25 @@ func (this *remoteStateMirror) setFailure(_ error) {
 	// surfaces via the target's liveness state.
 }
 
-// annotateScrapedFrom prepends source to the snapshot's ScrapedFrom.
+// annotateScrape stamps origin and chain on a scraped top-level state.
+//
+//   - ScrapedFrom: the origin / first producer. Set on the first hop
+//     (when the field is empty), preserved on every subsequent hop.
+//   - ScrapePath:  the chain "nearest > ... > origin". Each hop
+//     prepends the source it scraped from. Rightmost is always the
+//     origin (matches ScrapedFrom by construction).
+//
 // Children are not recursively annotated: a scraped top owns its
-// subtree, so the top's _scraped_from is enough to indicate origin for
+// subtree, so the top's fields are enough to indicate origin/chain for
 // the whole branch.
-func annotateScrapedFrom(s statekit.Snapshot, source string) statekit.Snapshot {
+func annotateScrape(s statekit.Snapshot, source string) statekit.Snapshot {
 	if s.ScrapedFrom == "" {
 		s.ScrapedFrom = source
+	}
+	if s.ScrapePath == "" {
+		s.ScrapePath = source
 	} else {
-		s.ScrapedFrom = source + " > " + s.ScrapedFrom
+		s.ScrapePath = source + " > " + s.ScrapePath
 	}
 	return s
 }
@@ -143,19 +151,10 @@ func buildAggregation(target TargetConfig, cfg Config, client *http.Client) (*ta
 	return &taskRunner{name: identifier + ".state", interval: interval, tick: tick}, mirror
 }
 
-func decodeStateDoc(contentType string, body []byte) (statekit.StateDisplayDocument, error) {
+func decodeStateDoc(_ string, body []byte) (statekit.StateDisplayDocument, error) {
 	var doc statekit.StateDisplayDocument
-	if strings.Contains(strings.ToLower(contentType), "yaml") {
-		if err := yaml.Unmarshal(body, &doc); err != nil {
-			return doc, fmt.Errorf("yaml decode: %w", err)
-		}
-		return doc, nil
+	if err := yaml.Unmarshal(body, &doc); err != nil {
+		return doc, fmt.Errorf("yaml decode: %w", err)
 	}
-	if jerr := json.Unmarshal(body, &doc); jerr == nil {
-		return doc, nil
-	} else if yerr := yaml.Unmarshal(body, &doc); yerr == nil {
-		return doc, nil
-	} else {
-		return doc, fmt.Errorf("decode failed: json: %v; yaml: %v", jerr, yerr)
-	}
+	return doc, nil
 }

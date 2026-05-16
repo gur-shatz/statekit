@@ -41,7 +41,7 @@ func NewRegistry(opts ...RegistryOption) *Registry {
 	})
 	r.rememberDesc(PrometheusDesc{
 		Name: "state_time_in_state_seconds",
-		Help: "Seconds since the state last changed level or message.",
+		Help: "Seconds since the state last changed status or reason.",
 		Type: PrometheusGauge,
 	})
 	return r

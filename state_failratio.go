@@ -6,7 +6,7 @@ import (
 )
 
 type FailRatioPolicy interface {
-	Evaluate(FailRatioSnapshot) (Status, string, any)
+	Evaluate(FailRatioSnapshot) (Status, string, map[string]any)
 }
 
 type FailRatioSnapshot struct {
@@ -134,8 +134,8 @@ func (f *FailRatio) pruneLocked() {
 
 func (f *FailRatio) updateLocked() {
 	ratio := f.ratioSnapshotLocked()
-	status, message, data := f.policy.Evaluate(ratio)
-	f.tracker.set(status, message, data)
+	status, reason, data := f.policy.Evaluate(ratio)
+	f.tracker.set(status, reason, data)
 }
 
 func (f *FailRatio) ratioSnapshotLocked() FailRatioSnapshot {
@@ -169,7 +169,7 @@ func AllFailed(minSamples int, badStatus Status) AllFailedPolicy {
 	return AllFailedPolicy{MinSamples: minSamples, BadStatus: badStatus}
 }
 
-func (p AllFailedPolicy) Evaluate(s FailRatioSnapshot) (Status, string, any) {
+func (p AllFailedPolicy) Evaluate(s FailRatioSnapshot) (Status, string, map[string]any) {
 	if p.MinSamples <= 0 {
 		p.MinSamples = 1
 	}
@@ -177,9 +177,9 @@ func (p AllFailedPolicy) Evaluate(s FailRatioSnapshot) (Status, string, any) {
 		p.BadStatus = Fail
 	}
 	if s.Total >= p.MinSamples && s.Failures == s.Total {
-		return p.BadStatus, "all outcomes failed", s
+		return p.BadStatus, "all outcomes failed", failRatioData(s)
 	}
-	return Pass, "", s
+	return Pass, "", failRatioData(s)
 }
 
 // RatioPolicy marks the state warn/fail/down when the window's failure ratio
@@ -191,21 +191,32 @@ type RatioPolicy struct {
 	DownAt     float64
 }
 
-func (p RatioPolicy) Evaluate(s FailRatioSnapshot) (Status, string, any) {
+func (p RatioPolicy) Evaluate(s FailRatioSnapshot) (Status, string, map[string]any) {
+	data := failRatioData(s)
 	if p.MinSamples <= 0 {
 		p.MinSamples = 1
 	}
 	if s.Total < p.MinSamples {
-		return Pass, "", s
+		return Pass, "", data
 	}
 	switch {
 	case p.DownAt > 0 && s.FailRatio >= p.DownAt:
-		return Down, "failure ratio crossed down threshold", s
+		return Down, "failure ratio crossed down threshold", data
 	case p.FailAt > 0 && s.FailRatio >= p.FailAt:
-		return Fail, "failure ratio crossed fail threshold", s
+		return Fail, "failure ratio crossed fail threshold", data
 	case p.WarnAt > 0 && s.FailRatio >= p.WarnAt:
-		return Warn, "failure ratio crossed warn threshold", s
+		return Warn, "failure ratio crossed warn threshold", data
 	default:
-		return Pass, "", s
+		return Pass, "", data
+	}
+}
+
+func failRatioData(s FailRatioSnapshot) map[string]any {
+	return map[string]any{
+		"window":     s.Window.String(),
+		"total":      s.Total,
+		"failures":   s.Failures,
+		"passes":     s.Passes,
+		"fail_ratio": s.FailRatio,
 	}
 }

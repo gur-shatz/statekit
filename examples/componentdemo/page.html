@@ -54,12 +54,10 @@
     <header>
       <div>
         <h1>statekit component demo</h1>
-        <div class="msg">Aggregate state: <span class="pill {{.Snapshot.Status}}">{{.Snapshot.Status}}</span> {{.Snapshot.Message}}</div>
+        <div class="msg">Aggregate state: <span class="pill {{.Snapshot.Status}}">{{.Snapshot.Status}}</span> {{.Snapshot.Reason}}</div>
       </div>
       <nav class="links">
-        <a href="/state">JSON state</a>
-        <a href="/state/display.json">Display JSON</a>
-        <a href="/state/display.yaml">Display YAML</a>
+        <a href="/state">State (YAML)</a>
         <a href="/metrics">Prometheus scrape</a>
       </nav>
     </header>
@@ -72,7 +70,7 @@
           <div class="state">
             <div class="name">{{.Name}}</div>
             <span class="pill {{.Status}}">{{.Status}}</span>
-            <div class="msg">{{.Message}}</div>
+            <div class="msg">{{.Reason}}</div>
           </div>
           {{end}}
         </div>
@@ -109,8 +107,8 @@
                 <option value="down">down</option>
               </select>
             </label>
-            <label>Message
-              <input name="message" value="operator changed state">
+            <label>Reason
+              <input name="reason" value="operator changed state">
             </label>
             <label>&nbsp;
               <button type="submit">Apply</button>

@@ -88,23 +88,23 @@ func (s *AggregateState) Snapshot() Snapshot {
 
 	childSnaps := make([]Snapshot, 0, len(children))
 	status := Pass
-	message := ""
+	reason := ""
 	for _, child := range children {
 		snap := child.state.Snapshot()
 		childSnaps = append(childSnaps, snap)
 		contribution := aggregateContribution(snap, child.worstStatus)
 		if contribution > status {
 			status = contribution
-			message = snap.Name
-			if snap.Message != "" {
-				message += ": " + snap.Message
+			reason = snap.Name
+			if snap.Reason != "" {
+				reason += ": " + snap.Reason
 			}
 		}
 	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.tracker.set(status, message, nil)
+	s.tracker.set(status, reason, nil)
 	return s.tracker.snapshot(childSnaps)
 }
 

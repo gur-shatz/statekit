@@ -273,9 +273,9 @@ func TestLivenessSnapshotDataIncludesProbeMetadata(t *testing.T) {
 	runner.tick(context.Background())
 
 	snap := state.Snapshot()
-	data, ok := snap.Data.(map[string]any)
-	if !ok {
-		t.Fatalf("snapshot data type = %T", snap.Data)
+	data := snap.Data
+	if data == nil {
+		t.Fatalf("snapshot data was nil")
 	}
 	if data["http_status"] != 204 {
 		t.Fatalf("http_status = %+v", data["http_status"])

@@ -6,7 +6,7 @@ The core idea is that application objects own their own condition, locking,
 history, and evaluation logic. `statekit` provides two kinds of objects:
 
 - **States** report the condition of a component (`pass` / `warn` / `fail` /
-  `down`) along with a message, history, and optional structured data.
+  `down`) along with a reason, history, and optional structured data.
 - **Metrics** report numeric values from inside the component.
 
 A `Registry` enumerates both, applies const labels, and serves HTTP
@@ -33,9 +33,7 @@ db.Fail("connection refused", nil)
 requests.Inc()
 inflight.Set(2)
 
-http.Handle("/state", reg.JSONHandler())
-http.Handle("/state/display.json", reg.StateDisplayJSONHandler())
-http.Handle("/state/display.yaml", reg.StateDisplayYAMLHandler())
+http.Handle("/state", reg.StateDisplayYAMLHandler())
 http.Handle("/metrics", reg.PrometheusHandler())
 ```
 
@@ -50,7 +48,7 @@ type State interface {
 }
 ```
 
-A snapshot carries a current status, a message, history, and optionally a
+A snapshot carries a current status, a reason, history, and optionally a
 nested tree of child snapshots.
 
 ### Status levels
@@ -182,9 +180,9 @@ hosts.Mark("us-east-1", false)
 
 ### Display format
 
-`/state/display.json` and `/state/display.yaml` wrap the current state tree
-in a stable document that includes the registry's label hierarchy. A
-fleet-wide visualizer can merge many component documents by `label_path`.
+`/state` (served as YAML) wraps the current state tree in a stable
+document that includes the registry's label hierarchy. A fleet-wide
+visualizer can merge many component documents by `label_path`.
 
 ```yaml
 kind: statekit.state.v1
@@ -197,9 +195,9 @@ states:
   - name: checkout-api
     status: warn
     importance: important
-    message: "payments-upstream: failure ratio crossed warn threshold"
+    reason: "payments-upstream: failure ratio crossed warn threshold"
     changed_at: 2026-05-16T00:58:30.966234+03:00
-    time_in_state_secs: 4
+    changed_secs_ago: 4
     history:
       - timestamp: 2026-05-16T00:58:25.258633+03:00
         status: pass
@@ -207,13 +205,13 @@ states:
       - timestamp: 2026-05-16T00:58:30.966234+03:00
         status: warn
         secs_ago: 4
-        message: "payments-upstream: failure ratio crossed warn threshold"
+        reason: "payments-upstream: failure ratio crossed warn threshold"
     checks:
       - name: database
         status: pass
         importance: important
         changed_at: 2026-05-16T00:58:25.258633+03:00
-        time_in_state_secs: 9
+        changed_secs_ago: 9
         history:
           - timestamp: 2026-05-16T00:58:25.258633+03:00
             status: pass
@@ -221,7 +219,7 @@ states:
       - name: payments-upstream
         status: warn
         importance: important
-        message: failure ratio crossed warn threshold
+        reason: failure ratio crossed warn threshold
         data:
           window: 5m0s
           total: 3
@@ -229,7 +227,7 @@ states:
           passes: 2
           fail_ratio: 0.3333333333333333
         changed_at: 2026-05-16T00:58:25.258648+03:00
-        time_in_state_secs: 9
+        changed_secs_ago: 9
         history:
           - timestamp: 2026-05-16T00:58:25.258634+03:00
             status: pass
@@ -237,7 +235,7 @@ states:
           - timestamp: 2026-05-16T00:58:25.258648+03:00
             status: warn
             secs_ago: 9
-            message: failure ratio crossed warn threshold
+            reason: failure ratio crossed warn threshold
             data:
               window: 5m0s
               total: 3
@@ -350,8 +348,7 @@ gauges, failure-ratio state, JSON snapshots, and Prometheus scraping:
 go run ./examples/componentdemo
 ```
 
-The demo serves a web UI at `http://localhost:8080/`, raw JSON at `/state`,
-display documents at `/state/display.json` and `/state/display.yaml`, and
-Prometheus text at `/metrics`.
+The demo serves a web UI at `http://localhost:19080/`, the state display
+document (YAML) at `/state`, and Prometheus text at `/metrics`.
 
-Set `PORT=8081` or another value if port 8080 is already in use.
+Set `PORT=29080` or another value if port 19080 is already in use.

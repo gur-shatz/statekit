@@ -10,10 +10,10 @@ timeout, and expiration.
 
 A `*Scraper` exposes two things:
 
-- `Scraper.State() statekit.State` — an aggregate state whose children
-  are one entry per target task. Register it with a
-  `statekit.Registry` to surface it on `/state` and the display
-  endpoints.
+- `Scraper.States() []statekit.State` — the top-level states produced
+  by the scraper (per-target liveness checks and per-target
+  state_aggregation roots). Register each with a `statekit.Registry`.
+  The scraper does not wrap them in its own aggregate.
 - `Scraper.MetricsCollector() statekit.PrometheusCollector` — a
   collector for samples scraped from target `/metrics` endpoints.
 
@@ -24,12 +24,14 @@ cfg, _ := scraper.LoadConfig("scraper.yaml")
 sc, _ := scraper.New(*cfg)
 
 reg := statekit.NewRegistry(statekit.WithLabel("role", "scraper"))
-reg.Register(sc.State())
+for _, st := range sc.States() {
+    reg.Register(st)
+}
 reg.RegisterCollectors(sc.MetricsCollector())
 
 go sc.Run(ctx)
 
-http.Handle("/state/display.yaml", reg.StateDisplayYAMLHandler())
+http.Handle("/state", reg.StateDisplayYAMLHandler())
 http.Handle("/metrics", reg.PrometheusHandler())
 ```
 
@@ -91,14 +93,15 @@ Implemented today: `method`, `expect_status`, `max_latency`,
 
 ### `state_aggregation`
 
-Fetches the target's state display document (`/state/display.json` or
-`/state/display.yaml`) and exposes its full tree under the scraper's
-state. Children, history, importance, messages, and `data` fields are
-preserved verbatim.
+Fetches the target's state display document (`/state`, YAML) and
+exposes its top-level scraped state through the scraper. Children,
+history, importance, reasons, and `data` fields are preserved
+verbatim. The top-level state's `scraped_from` is annotated with the
+target identifier (existing chains are preserved by prepending).
 
 ```yaml
 state_aggregation:
-  path: /state/display.yaml
+  path: /state
   labels:
     subsystem: issuer
 ```
@@ -169,7 +172,7 @@ targets:
           fail_after: 3
           recover_after: 2
     state_aggregation:
-      path: /state/display.yaml
+      path: /state
       labels:
         subsystem: issuer
     metrics:
@@ -207,7 +210,7 @@ After merging, the scraper appends two structural labels:
 ## Expiration
 
 If no successful scrape happens within `expiration`, the affected state
-flips to `down` with message `"stale (no scrape within expiration)"`.
+flips to `down` with reason `"stale (no scrape within expiration)"`.
 For `state_aggregation`, the last-known children remain visible under
 the stale wrapper so operators can see "last known good plus we lost
 contact." Set `expiration: 0` (or omit) to disable.

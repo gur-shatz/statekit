@@ -26,7 +26,7 @@ type livenessState struct {
 	labels      map[string]string
 	expiration  time.Duration
 	policy      FailurePolicy
-	scrapedFrom string // set by Scraper.New; surfaces as Snapshot._scraped_from
+	scrapedFrom string // set by Scraper.New; surfaces as Snapshot.scraped_from
 
 	mu         sync.Mutex
 	inner      *statekit.ManualState
@@ -65,6 +65,7 @@ func (this *livenessState) Snapshot() statekit.Snapshot {
 	this.mu.Unlock()
 	if this.scrapedFrom != "" {
 		snap.ScrapedFrom = this.scrapedFrom
+		snap.ScrapePath = this.scrapedFrom
 	}
 	return snap
 }
@@ -120,9 +121,12 @@ func (this *livenessState) recordFailure(status statekit.Status, err error, late
 }
 
 func (this *livenessState) dataLocked() map[string]any {
-	data := map[string]any{
-		"consecutive_failures":  this.failCount,
-		"consecutive_successes": this.passCount,
+	data := map[string]any{}
+	if this.failCount > 0 {
+		data["consecutive_failures"] = this.failCount
+	}
+	if this.passCount > 0 {
+		data["consecutive_successes"] = this.passCount
 	}
 	if len(this.labels) > 0 {
 		data["labels"] = this.labels
@@ -131,11 +135,14 @@ func (this *livenessState) dataLocked() map[string]any {
 		data["updated_at"] = this.updatedAt
 		data["updated_secs_ago"] = int64(time.Since(this.updatedAt).Seconds())
 	}
-	if this.latency > 0 {
-		data["latency_ms"] = this.latency.Milliseconds()
+	if ms := this.latency.Milliseconds(); ms > 0 {
+		data["latency_ms"] = ms
 	}
 	if this.httpStatus != 0 {
 		data["http_status"] = this.httpStatus
+	}
+	if len(data) == 0 {
+		return nil
 	}
 	return data
 }

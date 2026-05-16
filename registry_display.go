@@ -1,6 +1,7 @@
 package statekit
 
 import (
+	"fmt"
 	"net/http"
 	"sort"
 
@@ -29,12 +30,39 @@ func (r *Registry) StateDisplay() StateDisplayDocument {
 }
 
 func (r *Registry) StateDisplayYAMLHandler() http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		doc, err := displayDocumentWithFormat(r.StateDisplay(), req.URL.Query().Get("format"))
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
 		w.Header().Set("Content-Type", "text/yaml; charset=utf-8")
-		if err := yaml.NewEncoder(w).Encode(r.StateDisplay()); err != nil {
+		if err := yaml.NewEncoder(w).Encode(doc); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 		}
 	})
+}
+
+func displayDocumentWithFormat(doc StateDisplayDocument, format string) (StateDisplayDocument, error) {
+	switch format {
+	case "", "verbose":
+		return doc, nil
+	case "short":
+		doc.States = snapshotsWithoutHistory(doc.States)
+		return doc, nil
+	default:
+		return StateDisplayDocument{}, fmt.Errorf("unsupported state display format %q", format)
+	}
+}
+
+func snapshotsWithoutHistory(in []Snapshot) []Snapshot {
+	out := make([]Snapshot, len(in))
+	for i, snap := range in {
+		snap.History = nil
+		snap.Checks = snapshotsWithoutHistory(snap.Checks)
+		out[i] = snap
+	}
+	return out
 }
 
 func (r *Registry) stateDisplayLabelPath() []StateDisplayLabel {

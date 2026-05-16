@@ -2,6 +2,7 @@ package statekit
 
 import (
 	"bytes"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
@@ -13,14 +14,14 @@ func TestManualStateTracksHistory(t *testing.T) {
 	now := time.Date(2026, 5, 15, 12, 0, 0, 0, time.UTC)
 	s := NewManualState("database", WithClock(func() time.Time { return now }))
 
-	s.Fail("connection refused", map[string]string{"host": "db"})
+	s.Fail("connection refused", map[string]any{"host": "db"})
 	snap := s.Snapshot()
 
 	if snap.Status != Fail {
 		t.Fatalf("level = %v, want %v", snap.Status, Fail)
 	}
-	if snap.Message != "connection refused" {
-		t.Fatalf("message = %q", snap.Message)
+	if snap.Reason != "connection refused" {
+		t.Fatalf("reason = %q", snap.Reason)
 	}
 	if len(snap.History) != 2 {
 		t.Fatalf("history len = %d, want 2", len(snap.History))
@@ -50,6 +51,16 @@ func TestManualStateHistoryReportsSecondsAgo(t *testing.T) {
 	}
 	if got := snap.History[1].SecsAgo; got != 3 {
 		t.Fatalf("warn history secs ago = %v, want 3", got)
+	}
+}
+
+func TestManualStateClearsReasonForPass(t *testing.T) {
+	s := NewManualState("database")
+	s.Pass("connected", nil)
+
+	snap := s.Snapshot()
+	if snap.Reason != "" {
+		t.Fatalf("pass reason = %q, want empty", snap.Reason)
 	}
 }
 
@@ -90,8 +101,8 @@ func TestAggregateStateCanCapChildContribution(t *testing.T) {
 	if snap.Status != Warn {
 		t.Fatalf("capped fail contribution = %v, want warn", snap.Status)
 	}
-	if snap.Message != "optional-upstream: upstream failing" {
-		t.Fatalf("message = %q", snap.Message)
+	if snap.Reason != "optional-upstream: upstream failing" {
+		t.Fatalf("reason = %q", snap.Reason)
 	}
 	if len(snap.Checks) != 1 || snap.Checks[0].Status != Fail {
 		t.Fatalf("child snapshot should preserve real level: %+v", snap.Checks)
@@ -109,8 +120,8 @@ func TestAggregateStateCanUseCustomWorstChildContribution(t *testing.T) {
 	if snap.Status != Pass {
 		t.Fatalf("capped down contribution = %v, want pass", snap.Status)
 	}
-	if snap.Message != "" {
-		t.Fatalf("message = %q, want empty", snap.Message)
+	if snap.Reason != "" {
+		t.Fatalf("reason = %q, want empty", snap.Reason)
 	}
 }
 
@@ -195,10 +206,30 @@ func TestRegistryStateDisplayHandlers(t *testing.T) {
 		"value: checkout",
 		"status: warn",
 		"changed_at:",
+		"history:",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("yaml display missing %q:\n%s", want, text)
 		}
+	}
+
+	shortResponse := httptest.NewRecorder()
+	reg.StateDisplayYAMLHandler().ServeHTTP(shortResponse, httptest.NewRequest("GET", "/state?format=short", nil))
+	if got := shortResponse.Code; got != 200 {
+		t.Fatalf("short yaml status = %d", got)
+	}
+	shortText := shortResponse.Body.String()
+	if strings.Contains(shortText, "history:") {
+		t.Fatalf("short yaml display should omit history:\n%s", shortText)
+	}
+	if !strings.Contains(shortText, "status: warn") {
+		t.Fatalf("short yaml display missing state:\n%s", shortText)
+	}
+
+	badResponse := httptest.NewRecorder()
+	reg.StateDisplayYAMLHandler().ServeHTTP(badResponse, httptest.NewRequest("GET", "/state?format=tiny", nil))
+	if got := badResponse.Code; got != http.StatusBadRequest {
+		t.Fatalf("bad format status = %d, want %d", got, http.StatusBadRequest)
 	}
 }
 

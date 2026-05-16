@@ -11,7 +11,7 @@
 // Try:
 //
 //	go run ./examples/fleetdemo
-//	curl -s http://localhost:19084/state/display.yaml
+//	curl -s http://localhost:19084/state
 //	curl -s http://localhost:19084/metrics
 package main
 
@@ -80,9 +80,7 @@ func newFakeComponent(name, region string, port int, degradeCache bool) *fakeCom
 
 func (this *fakeComponent) serve() *http.Server {
 	mux := http.NewServeMux()
-	mux.Handle("/state", this.reg.JSONHandler())
-	mux.Handle("/state/display.json", this.reg.StateDisplayJSONHandler())
-	mux.Handle("/state/display.yaml", this.reg.StateDisplayYAMLHandler())
+	mux.Handle("/state", this.reg.StateDisplayYAMLHandler())
 	mux.Handle("/metrics", this.reg.PrometheusHandler())
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/" {
@@ -148,7 +146,7 @@ func main() {
 					Labels:       map[string]string{"probe": "http"},
 				}},
 				StateAggregation: &scraper.StateAggregationTask{
-					Path:   "/state/display.yaml",
+					Path:   "/state",
 					Labels: map[string]string{"subsystem": "issuer"},
 				},
 				Metrics: &scraper.MetricsTask{
@@ -171,7 +169,7 @@ func main() {
 					Labels:       map[string]string{"probe": "http"},
 				}},
 				StateAggregation: &scraper.StateAggregationTask{
-					Path:   "/state/display.yaml",
+					Path:   "/state",
 					Labels: map[string]string{"subsystem": "issuer"},
 				},
 				Metrics: &scraper.MetricsTask{
@@ -194,9 +192,7 @@ func main() {
 	_ = scraperReg.RegisterCollectors(sc.MetricsCollector())
 
 	scraperMux := http.NewServeMux()
-	scraperMux.Handle("/state", scraperReg.JSONHandler())
-	scraperMux.Handle("/state/display.json", scraperReg.StateDisplayJSONHandler())
-	scraperMux.Handle("/state/display.yaml", scraperReg.StateDisplayYAMLHandler())
+	scraperMux.Handle("/state", scraperReg.StateDisplayYAMLHandler())
 	scraperMux.Handle("/metrics", scraperReg.PrometheusHandler())
 	scraperSrv := &http.Server{Addr: fmt.Sprintf(":%d", portScraper), Handler: scraperMux}
 

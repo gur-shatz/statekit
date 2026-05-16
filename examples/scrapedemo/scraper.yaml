@@ -28,7 +28,7 @@ targets:
         labels:
           probe: http
     state_aggregation:
-      path: /state/display.yaml
+      path: /state
       labels:
         subsystem: issuer
     metrics:

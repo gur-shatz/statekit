@@ -105,7 +105,7 @@ func stateSamples(s Snapshot) []PrometheusSample {
 	}
 	samples := []PrometheusSample{
 		{Name: "state_level", Labels: labels, Value: prometheusStatusValue(s.Status)},
-		{Name: "state_time_in_state_seconds", Labels: labels, Value: float64(s.TimeInStateSecs)},
+		{Name: "state_time_in_state_seconds", Labels: labels, Value: float64(s.ChangedSecsAgo)},
 	}
 	for _, child := range s.Checks {
 		samples = append(samples, stateSamples(child)...)
