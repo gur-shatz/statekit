@@ -45,7 +45,7 @@ func NewFailRatio(name string, window time.Duration, policy FailRatioPolicy, opt
 		policy = RatioPolicy{FailAt: 1, MinSamples: 1}
 	}
 	return &FailRatio{
-		tracker: newStateTracker(name, o.importance, o.now),
+		tracker: newStateTracker(name, o.importance, o.help, o.now),
 		window:  window,
 		policy:  policy,
 		now:     o.now,

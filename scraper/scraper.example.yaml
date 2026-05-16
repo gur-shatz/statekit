@@ -1,0 +1,91 @@
+# Example scraper configuration.
+
+# Labels applied to every state the scraper produces.
+labels:
+  scraper: fleet-aggregator
+  region: us-east-1
+
+# Per-task defaults. Any target or check can override these.
+defaults:
+  interval: 15s
+  timeout: 5s
+  expiration: 1m # How long to keep a state if not updated.
+  name_as_prefix: false # Whether to prefix state names with the target name.
+  name_as_label: scrapee # Add label scrapee=<target name>. Default: scrapee.
+  http_liveness:
+    expect_status: [200]
+    max_latency: 1s
+    failure_policy:
+      fail_after: 3
+      recover_after: 2
+
+targets:
+  # id is optional, but recommended. If present, scraper uses it as the stable
+  # global identity for dedupe across config files, renamed targets, or aliases.
+  - id: issuer-prod-use1
+    name: issuer
+
+    # group_name is an opinionated grouping label for UI/navigation.
+    # The scraper should also emit it as label group_name=payments.
+    group_name: payments
+
+    base_url: http://issuer.svc.cluster.local:8080
+
+    # Liveness is a list of named HTTP checks. Each check becomes a child state
+    # under this target's liveness state.
+    liveness:
+      - id: health
+        name: public health endpoint
+        type: http
+        path: /health
+        importance: important
+
+        # Status checks: default could remain any 2xx, but explicit is clearer.
+        expect_status: [200]
+
+        # Latency check: exceeding this threshold fails the probe attempt.
+        max_latency: 750ms
+
+        # Body checks. expect_body_regex is useful for text assertions.
+        # expect_json is a compact JSON assertion: <path> <predicate> <value>.
+        # expect_contents is a literal body substring check.
+        expect_body_regex: '"status"\s*:\s*"ok"'
+        expect_json:
+          - "$.status equals ok"
+          - "$.errors equals []"
+        expect_contents: ok
+
+        # Failure policy turns probe attempts into state transitions.
+        # fail_after: warn during the first N-1 failures, fail/down after N.
+        # recover_after: require N successful probes before returning to pass.
+        failure_policy:
+          fail_after: 3
+          recover_after: 2
+
+        labels:
+          probe: http
+
+      - id: simple_health # the simplest possible health check, with all defaults
+        path: /
+
+      - id: ready
+        type: http
+        path: /ready
+        importance: informational
+        expect_status: [200, 204]
+        max_latency: 250ms
+        failure_policy:
+          fail_after: 2
+          recover_after: 1
+
+    state_aggregation:
+      path: /state.yaml
+      labels:
+        subsystem: issuer
+
+    metrics:
+      paths:
+        - /metrics
+        - /app_metrics
+      labels:
+        subsystem: issuer

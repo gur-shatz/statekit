@@ -4,6 +4,7 @@ import "time"
 
 type stateOptions struct {
 	importance Importance
+	help       string
 	now        clock
 }
 
@@ -25,5 +26,14 @@ func WithImportance(i Importance) Option {
 func WithClock(now func() time.Time) Option {
 	return func(o *stateOptions) {
 		o.now = now
+	}
+}
+
+// WithHelp attaches a free-form description to the state that surfaces
+// in display documents under "help". Useful for explaining what the
+// state means in operational terms.
+func WithHelp(help string) Option {
+	return func(o *stateOptions) {
+		o.help = help
 	}
 }

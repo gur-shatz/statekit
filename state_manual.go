@@ -13,7 +13,7 @@ func NewManualState(name string, opts ...Option) *ManualState {
 	for _, opt := range opts {
 		opt(&o)
 	}
-	return &ManualState{tracker: newStateTracker(name, o.importance, o.now)}
+	return &ManualState{tracker: newStateTracker(name, o.importance, o.help, o.now)}
 }
 
 func (s *ManualState) Name() string {

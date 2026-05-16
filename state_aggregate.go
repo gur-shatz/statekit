@@ -20,7 +20,7 @@ func NewStateAggregator(name string, opts ...Option) *AggregateState {
 	for _, opt := range opts {
 		opt(&o)
 	}
-	return &AggregateState{tracker: newStateTracker(name, o.importance, o.now)}
+	return &AggregateState{tracker: newStateTracker(name, o.importance, o.help, o.now)}
 }
 
 func (s *AggregateState) Name() string {

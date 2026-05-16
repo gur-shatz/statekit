@@ -1,0 +1,38 @@
+# Demo scraper configuration.
+#
+# Polls the componentdemo running at :19080 and exposes the aggregated
+# state and metrics on :19081 (configurable via -addr on scrapedemo).
+
+labels:
+  scraper: demo
+  region: local
+
+defaults:
+  interval: 3s
+  timeout: 2s
+  expiration: 30s
+
+targets:
+  - id: issuer
+    name: issuer
+    base_url: http://localhost:19080
+    labels:
+      service: issuer
+      env: demo
+    liveness:
+      - id: up
+        path: /
+        importance: important
+        expect_status: [200]
+        max_latency: 1s
+        labels:
+          probe: http
+    state_aggregation:
+      path: /state/display.yaml
+      labels:
+        subsystem: issuer
+    metrics:
+      paths:
+        - /metrics
+      labels:
+        subsystem: issuer

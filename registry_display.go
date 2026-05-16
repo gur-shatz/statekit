@@ -1,7 +1,6 @@
 package statekit
 
 import (
-	"encoding/json"
 	"net/http"
 	"sort"
 
@@ -27,15 +26,6 @@ func (r *Registry) StateDisplay() StateDisplayDocument {
 		LabelPath: r.stateDisplayLabelPath(),
 		States:    r.Snapshot(),
 	}
-}
-
-func (r *Registry) StateDisplayJSONHandler() http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		if err := json.NewEncoder(w).Encode(r.StateDisplay()); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-		}
-	})
 }
 
 func (r *Registry) StateDisplayYAMLHandler() http.Handler {

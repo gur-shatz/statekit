@@ -2,7 +2,6 @@ package statekit
 
 import (
 	"bytes"
-	"encoding/json"
 	"net/http/httptest"
 	"strings"
 	"sync"
@@ -183,27 +182,8 @@ func TestRegistryStateDisplayHandlers(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	jsonResponse := httptest.NewRecorder()
-	reg.StateDisplayJSONHandler().ServeHTTP(jsonResponse, httptest.NewRequest("GET", "/state/display.json", nil))
-	if got := jsonResponse.Header().Get("Content-Type"); got != "application/json" {
-		t.Fatalf("json content type = %q", got)
-	}
-	var doc StateDisplayDocument
-	if err := json.Unmarshal(jsonResponse.Body.Bytes(), &doc); err != nil {
-		t.Fatal(err)
-	}
-	if doc.Kind != StateDisplayKind || len(doc.States) != 1 {
-		t.Fatalf("json display doc = %+v", doc)
-	}
-	if !strings.Contains(jsonResponse.Body.String(), `"status":"warn"`) {
-		t.Fatalf("json display missing status:\n%s", jsonResponse.Body.String())
-	}
-	if !strings.Contains(jsonResponse.Body.String(), `"label_path":[`) {
-		t.Fatalf("json display missing label_path:\n%s", jsonResponse.Body.String())
-	}
-
 	yamlResponse := httptest.NewRecorder()
-	reg.StateDisplayYAMLHandler().ServeHTTP(yamlResponse, httptest.NewRequest("GET", "/state/display.yaml", nil))
+	reg.StateDisplayYAMLHandler().ServeHTTP(yamlResponse, httptest.NewRequest("GET", "/state", nil))
 	if got := yamlResponse.Header().Get("Content-Type"); got != "text/yaml; charset=utf-8" {
 		t.Fatalf("yaml content type = %q", got)
 	}

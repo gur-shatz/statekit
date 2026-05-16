@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"gopkg.in/yaml.v3"
 )
 
 // Status is the condition reported by a state object.
@@ -57,6 +59,24 @@ func (s *Status) UnmarshalJSON(b []byte) error {
 
 func (s Status) MarshalYAML() (any, error) {
 	return s.String(), nil
+}
+
+func (s *Status) UnmarshalYAML(node *yaml.Node) error {
+	var str string
+	if err := node.Decode(&str); err == nil {
+		status, err := parseStatus(str)
+		if err != nil {
+			return err
+		}
+		*s = status
+		return nil
+	}
+	var n int
+	if err := node.Decode(&n); err != nil {
+		return err
+	}
+	*s = Status(n)
+	return nil
 }
 
 func parseStatus(s string) (Status, error) {
@@ -119,6 +139,24 @@ func (i Importance) MarshalYAML() (any, error) {
 	return i.String(), nil
 }
 
+func (i *Importance) UnmarshalYAML(node *yaml.Node) error {
+	var str string
+	if err := node.Decode(&str); err == nil {
+		importance, err := parseImportance(str)
+		if err != nil {
+			return err
+		}
+		*i = importance
+		return nil
+	}
+	var n int
+	if err := node.Decode(&n); err != nil {
+		return err
+	}
+	*i = Importance(n)
+	return nil
+}
+
 func parseImportance(s string) (Importance, error) {
 	switch strings.ToLower(s) {
 	case "informational":
@@ -141,9 +179,11 @@ type HistoryEntry struct {
 
 // Snapshot is an immutable point-in-time view of a State.
 type Snapshot struct {
+	ScrapedFrom     string         `json:"_scraped_from,omitempty" yaml:"_scraped_from,omitempty"`
 	Name            string         `json:"name" yaml:"name"`
 	Status          Status         `json:"status" yaml:"status"`
 	Importance      Importance     `json:"importance" yaml:"importance"`
+	Help            string         `json:"help,omitempty" yaml:"help,omitempty"`
 	Message         string         `json:"message,omitempty" yaml:"message,omitempty"`
 	Data            any            `json:"data,omitempty" yaml:"data,omitempty"`
 	ChangedAt       time.Time      `json:"changed_at" yaml:"changed_at"`

@@ -7,6 +7,7 @@ const defaultMaxHistory = 10
 type stateTracker struct {
 	name       string
 	importance Importance
+	help       string
 	status     Status
 	message    string
 	data       any
@@ -16,7 +17,7 @@ type stateTracker struct {
 	now        clock
 }
 
-func newStateTracker(name string, importance Importance, now clock) stateTracker {
+func newStateTracker(name string, importance Importance, help string, now clock) stateTracker {
 	if now == nil {
 		now = defaultClock
 	}
@@ -24,6 +25,7 @@ func newStateTracker(name string, importance Importance, now clock) stateTracker
 	return stateTracker{
 		name:       name,
 		importance: importance,
+		help:       help,
 		status:     Pass,
 		changedAt:  t,
 		history:    []HistoryEntry{{Timestamp: t, Status: Pass}},
@@ -65,6 +67,7 @@ func (t *stateTracker) snapshot(children []Snapshot) Snapshot {
 		Name:            t.name,
 		Status:          t.status,
 		Importance:      t.importance,
+		Help:            t.help,
 		Message:         t.message,
 		Data:            t.data,
 		ChangedAt:       t.changedAt,
