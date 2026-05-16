@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>statekit storage</title>
+  <link rel="stylesheet" href="ui.css">
+</head>
+<body>
+  <main>
+    <header class="topbar">
+      <div>
+        <h1>Fleet State</h1>
+        <div class="meta" id="lastRefresh">Loading...</div>
+      </div>
+      <div class="actions">
+        <select id="statusFilter" aria-label="Status filter">
+          <option value="">all targets</option>
+          <option value="issues">with issues</option>
+          <option value="down">down</option>
+          <option value="fail">fail</option>
+          <option value="warn">warn</option>
+          <option value="pass">ok</option>
+        </select>
+        <button id="refresh" type="button">Refresh</button>
+      </div>
+    </header>
+
+    <section class="summary" id="totals"></section>
+
+    <section class="workspace">
+      <div class="pane">
+        <div class="paneHeader">
+          <h2>Targets</h2>
+          <span class="meta">issues inline</span>
+        </div>
+        <div class="targetTable" id="targets"></div>
+      </div>
+
+      <div class="pane">
+        <div class="paneHeader">
+          <h2 id="statesTitle">States</h2>
+          <span class="meta">current state list</span>
+        </div>
+        <div class="stateTable" id="states"></div>
+      </div>
+
+      <div class="pane">
+        <div class="paneHeader">
+          <h2 id="timelineTitle">Timeline</h2>
+          <span class="meta">latest transitions</span>
+        </div>
+        <div class="eventTable" id="events"></div>
+      </div>
+    </section>
+  </main>
+  <script>
+    window.STATEKIT_API_BASE = "{{.APIBase}}";
+  </script>
+  <script src="ui.js"></script>
+</body>
+</html>

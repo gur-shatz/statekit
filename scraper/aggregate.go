@@ -12,19 +12,20 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// remoteStateMirror is the statekit.State exposed for one target's
-// state_aggregation task. Its Snapshot is the remote's first top-level
-// scraped state, annotated with scraped_from (prepending the target
-// identifier; existing scraped_from chains accumulate).
+// remoteStateMirror is the statekit.StateCollection exposed for one target's
+// state_aggregation task. Its Snapshots are the remote top-level states,
+// annotated with scraped_from/scrape_path and rolled up flatly into the
+// scraper registry.
 //
-// Before the first successful scrape (or after expiration), Snapshot
-// returns a synthetic Down placeholder named after the target.
+// Snapshot returns a local summary/fallback for direct callers only. Registry
+// display and Prometheus use Snapshots, so aggregation does not create a
+// visible wrapper state and does not turn remote states into checks.
 type remoteStateMirror struct {
-	source     string // target identifier; scraped_from contribution and pre-scrape Name
+	source     string // target identifier; scrape annotation for children and pre-scrape Name
 	expiration time.Duration
 
 	mu        sync.RWMutex
-	scraped   statekit.Snapshot
+	scraped   []statekit.Snapshot
 	hasData   bool
 	fetchedAt time.Time
 }
@@ -34,12 +35,7 @@ func newRemoteStateMirror(source string, expiration time.Duration) *remoteStateM
 }
 
 func (this *remoteStateMirror) Name() string {
-	this.mu.RLock()
-	defer this.mu.RUnlock()
-	if this.hasData {
-		return this.scraped.Name
-	}
-	return this.source
+	return this.source + ".state"
 }
 
 func (this *remoteStateMirror) Snapshot() statekit.Snapshot {
@@ -48,30 +44,45 @@ func (this *remoteStateMirror) Snapshot() statekit.Snapshot {
 
 	if !this.hasData {
 		return statekit.Snapshot{
-			ScrapedFrom: this.source,
-			Name:        this.source,
-			Status:      statekit.Down,
-			Importance:  statekit.Important,
-			Reason:      "no successful scrape yet",
-			ChangedAt:   time.Now(),
+			Name:       this.Name(),
+			Status:     statekit.Down,
+			Importance: statekit.Important,
+			Reason:     "no successful scrape yet",
+			ChangedAt:  time.Now(),
 		}
 	}
 
+	snap := this.snapshotLocked()
 	if this.expiration > 0 && time.Since(this.fetchedAt) > this.expiration {
-		snap := this.scraped
 		snap.Status = statekit.Down
 		snap.Reason = "stale (no scrape within expiration)"
 		return snap
 	}
 
-	return this.scraped
+	return snap
+}
+
+func (this *remoteStateMirror) Snapshots() []statekit.Snapshot {
+	this.mu.RLock()
+	defer this.mu.RUnlock()
+
+	if !this.hasData {
+		return nil
+	}
+	if this.expiration > 0 && time.Since(this.fetchedAt) > this.expiration {
+		return nil
+	}
+	return append([]statekit.Snapshot(nil), this.scraped...)
 }
 
 func (this *remoteStateMirror) setSuccess(doc statekit.StateDisplayDocument) {
 	if len(doc.States) == 0 {
 		return
 	}
-	annotated := annotateScrape(doc.States[0], this.source)
+	annotated := make([]statekit.Snapshot, 0, len(doc.States))
+	for _, state := range doc.States {
+		annotated = append(annotated, annotateScrape(state, this.source, doc.LabelPath))
+	}
 	this.mu.Lock()
 	this.scraped = annotated
 	this.hasData = true
@@ -85,6 +96,29 @@ func (this *remoteStateMirror) setFailure(_ error) {
 	// surfaces via the target's liveness state.
 }
 
+func (this *remoteStateMirror) snapshotLocked() statekit.Snapshot {
+	now := time.Now()
+	status := statekit.Pass
+	reason := ""
+	for _, child := range this.scraped {
+		if child.Status > status {
+			status = child.Status
+			reason = child.Name
+			if child.Reason != "" {
+				reason += ": " + child.Reason
+			}
+		}
+	}
+	return statekit.Snapshot{
+		Name:           this.Name(),
+		Status:         status,
+		Importance:     statekit.Important,
+		Reason:         reason,
+		ChangedAt:      this.fetchedAt,
+		ChangedSecsAgo: int64(now.Sub(this.fetchedAt).Seconds()),
+	}
+}
+
 // annotateScrape stamps origin and chain on a scraped top-level state.
 //
 //   - ScrapedFrom: the origin / first producer. Set on the first hop
@@ -96,7 +130,7 @@ func (this *remoteStateMirror) setFailure(_ error) {
 // Children are not recursively annotated: a scraped top owns its
 // subtree, so the top's fields are enough to indicate origin/chain for
 // the whole branch.
-func annotateScrape(s statekit.Snapshot, source string) statekit.Snapshot {
+func annotateScrape(s statekit.Snapshot, source string, labelPath []statekit.StateDisplayLabel) statekit.Snapshot {
 	if s.ScrapedFrom == "" {
 		s.ScrapedFrom = source
 	}
@@ -105,7 +139,37 @@ func annotateScrape(s statekit.Snapshot, source string) statekit.Snapshot {
 	} else {
 		s.ScrapePath = source + " > " + s.ScrapePath
 	}
+	if len(labelPath) > 0 {
+		labels := map[string]any{}
+		for _, label := range labelPath {
+			labels[label.Name] = label.Value
+		}
+		if s.Data == nil {
+			s.Data = map[string]any{}
+		}
+		if existing, ok := s.Data["labels"]; ok {
+			for k, v := range labelsFromAny(existing) {
+				labels[k] = v
+			}
+		}
+		s.Data["labels"] = labels
+	}
 	return s
+}
+
+func labelsFromAny(value any) map[string]any {
+	out := map[string]any{}
+	switch labels := value.(type) {
+	case map[string]string:
+		for k, v := range labels {
+			out[k] = v
+		}
+	case map[string]any:
+		for k, v := range labels {
+			out[k] = v
+		}
+	}
+	return out
 }
 
 func buildAggregation(target TargetConfig, cfg Config, client *http.Client) (*taskRunner, *remoteStateMirror) {

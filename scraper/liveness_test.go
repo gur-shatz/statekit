@@ -295,6 +295,58 @@ func TestLivenessSnapshotDataIncludesProbeMetadata(t *testing.T) {
 	}
 }
 
+func TestAggregationRollsUpRemoteStatesFlatly(t *testing.T) {
+	mirror := newRemoteStateMirror("regional-east", time.Minute)
+	mirror.setSuccess(statekit.StateDisplayDocument{
+		LabelPath: []statekit.StateDisplayLabel{
+			{Name: "regional_registry", Value: "regional-east"},
+		},
+		States: []statekit.Snapshot{
+			{
+				Name:       "checkout-east",
+				Status:     statekit.Pass,
+				Importance: statekit.Important,
+				ChangedAt:  time.Now(),
+				Checks: []statekit.Snapshot{{
+					Name:       "database",
+					Status:     statekit.Pass,
+					Importance: statekit.Important,
+					ChangedAt:  time.Now(),
+				}},
+			},
+			{
+				Name:       "billing-east",
+				Status:     statekit.Warn,
+				Importance: statekit.Important,
+				ChangedAt:  time.Now(),
+			},
+		},
+	})
+
+	summary := mirror.Snapshot()
+	if len(summary.Checks) != 0 {
+		t.Fatalf("aggregation summary has %d checks, want none", len(summary.Checks))
+	}
+
+	reg := statekit.NewRegistry()
+	if err := reg.Register(mirror); err != nil {
+		t.Fatal(err)
+	}
+	snaps := reg.Snapshot()
+	if len(snaps) != 2 {
+		t.Fatalf("registry snapshots = %d, want 2 flat remote states: %+v", len(snaps), snaps)
+	}
+	if snaps[0].Name != "checkout-east" || snaps[1].Name != "billing-east" {
+		t.Fatalf("snapshot names = %q, %q", snaps[0].Name, snaps[1].Name)
+	}
+	if snaps[0].ScrapedFrom != "regional-east" || snaps[0].ScrapePath != "regional-east" {
+		t.Fatalf("scrape metadata = %q %q", snaps[0].ScrapedFrom, snaps[0].ScrapePath)
+	}
+	if len(snaps[0].Checks) != 1 || snaps[0].Checks[0].Name != "database" {
+		t.Fatalf("leaf-owned checks were not preserved: %+v", snaps[0].Checks)
+	}
+}
+
 func response(status int, body string) *http.Response {
 	return &http.Response{
 		StatusCode: status,

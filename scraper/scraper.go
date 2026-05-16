@@ -21,10 +21,9 @@ const (
 )
 
 // Scraper periodically polls a set of targets. Each target contributes
-// one or more top-level states (per-check liveness + the scraped tree
-// top from state_aggregation, if configured). The scraper does NOT
-// wrap them in its own aggregate — callers register the produced
-// states directly with their statekit Registry.
+// one or more top-level states (per-check liveness + the remote top-level
+// states from state_aggregation, if configured). The scraper does NOT wrap
+// remote states in its own aggregate and does NOT rewrite their checks.
 type Scraper struct {
 	cfg    Config
 	client *http.Client

@@ -66,8 +66,7 @@ func main() {
 	}
 
 	mux := http.NewServeMux()
-	mux.Handle("/state", reg.StateDisplayYAMLHandler())
-	mux.Handle("/metrics", reg.PrometheusHandler())
+	reg.Mount(mux, "/")
 
 	server := &http.Server{Addr: *addr, Handler: mux}
 

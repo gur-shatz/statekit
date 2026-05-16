@@ -1,0 +1,28 @@
+title: statekit fleetdemo
+description: runctl wrapper for the self-contained fleet example.
+
+vars:
+  RUNCTL_PORT: '{{ env "RUNCTL_PORT" | default "19184" }}'
+  DATA_DIR: '{{ env "DATA_DIR" | default "/tmp/statekit-fleetdemo" }}'
+
+logs_dir: "{{ .DATA_DIR }}/logs"
+
+api:
+  port: [[ .RUNCTL_PORT | int ]]
+
+targets:
+  fleetdemo:
+    config: execrun.yaml
+    links:
+      - name: issuer-east
+        description: Fake component (east)
+        url: "http://localhost:19082/state"
+      - name: issuer-west
+        description: Fake component (west)
+        url: "http://localhost:19083/state"
+      - name: Scraper
+        description: Aggregated fleet state
+        url: "http://localhost:19084/state"
+      - name: Scraper metrics
+        description: Prometheus metrics
+        url: "http://localhost:19084/metrics"

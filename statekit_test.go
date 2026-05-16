@@ -233,6 +233,46 @@ func TestRegistryStateDisplayHandlers(t *testing.T) {
 	}
 }
 
+func TestRegistryMountIsolatesInstancesByPrefix(t *testing.T) {
+	mux := http.NewServeMux()
+
+	east := NewRegistry(WithLabel("component", "issuer-east"))
+	eastState := NewManualState("database")
+	eastState.Warn("slow", nil)
+	if err := east.Register(eastState); err != nil {
+		t.Fatal(err)
+	}
+	east.Mount(mux, "/east")
+
+	west := NewRegistry(WithLabel("component", "issuer-west"))
+	westState := NewManualState("database")
+	westState.Fail("connection refused", nil)
+	if err := west.Register(westState); err != nil {
+		t.Fatal(err)
+	}
+	west.Mount(mux, "west")
+
+	eastResponse := httptest.NewRecorder()
+	mux.ServeHTTP(eastResponse, httptest.NewRequest("GET", "/east/state", nil))
+	eastText := eastResponse.Body.String()
+	if !strings.Contains(eastText, "value: issuer-east") || !strings.Contains(eastText, "status: warn") {
+		t.Fatalf("east mounted state unexpected:\n%s", eastText)
+	}
+	if strings.Contains(eastText, "issuer-west") {
+		t.Fatalf("east mounted state leaked west registry:\n%s", eastText)
+	}
+
+	westResponse := httptest.NewRecorder()
+	mux.ServeHTTP(westResponse, httptest.NewRequest("GET", "/west/state?format=short", nil))
+	westText := westResponse.Body.String()
+	if !strings.Contains(westText, "value: issuer-west") || !strings.Contains(westText, "status: fail") {
+		t.Fatalf("west mounted state unexpected:\n%s", westText)
+	}
+	if strings.Contains(westText, "history:") {
+		t.Fatalf("short mounted state should omit history:\n%s", westText)
+	}
+}
+
 func TestRegistryPrometheusGroupsDescriptorsWithSamples(t *testing.T) {
 	reg := NewRegistry(WithLabel("component", "issuer"))
 	state := NewManualState("database")

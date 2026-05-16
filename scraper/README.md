@@ -31,8 +31,7 @@ reg.RegisterCollectors(sc.MetricsCollector())
 
 go sc.Run(ctx)
 
-http.Handle("/state", reg.StateDisplayYAMLHandler())
-http.Handle("/metrics", reg.PrometheusHandler())
+reg.Mount(http.DefaultServeMux, "/")
 ```
 
 ## Target shape

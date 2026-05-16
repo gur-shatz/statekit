@@ -1,0 +1,28 @@
+title: statekit scrapedemo
+description: runctl wrapper for the scraper example. Expects a statekit component on SOURCE_PORT.
+
+vars:
+  PORT: '{{ env "PORT" | default "19081" }}'
+  SOURCE_PORT: '{{ env "SOURCE_PORT" | default "19080" }}'
+  RUNCTL_PORT: '{{ env "RUNCTL_PORT" | default "19181" }}'
+  DATA_DIR: '{{ env "DATA_DIR" | default "/tmp/statekit-scrapedemo" }}'
+  ADDR: ':{{ .PORT }}'
+
+logs_dir: "{{ .DATA_DIR }}/logs"
+
+api:
+  port: [[ .RUNCTL_PORT | int ]]
+
+targets:
+  scrapedemo:
+    config: execrun.yaml
+    links:
+      - name: State
+        description: Scraped state (YAML)
+        url: "http://localhost:{{ .PORT }}/state"
+      - name: Metrics
+        description: Prometheus metrics
+        url: "http://localhost:{{ .PORT }}/metrics"
+      - name: Source
+        description: Component being scraped
+        url: "http://localhost:{{ .SOURCE_PORT }}/state"

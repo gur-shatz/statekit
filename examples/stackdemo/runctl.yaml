@@ -1,0 +1,30 @@
+title: statekit stackdemo
+description: runctl wrapper for the layered stack example with storage API.
+
+vars:
+  PORT: '{{ env "PORT" | default "19110" }}'
+  RUNCTL_PORT: '{{ env "RUNCTL_PORT" | default "19210" }}'
+  DATA_DIR: '{{ env "DATA_DIR" | default "/tmp/statekit-stackdemo" }}'
+  ADDR: ':{{ .PORT }}'
+
+logs_dir: "{{ .DATA_DIR }}/logs"
+
+api:
+  port: [[ .RUNCTL_PORT | int ]]
+
+targets:
+  stackdemo:
+    config: execrun.yaml
+    links:
+      - name: UI
+        description: Stack demo UI
+        url: "http://localhost:{{ .PORT }}/"
+      - name: Fleet state
+        description: Aggregated fleet state
+        url: "http://localhost:{{ .PORT }}/fleet/state"
+      - name: Storage groups
+        description: Storage API grouped by group_name
+        url: "http://localhost:{{ .PORT }}/api/state/groups?by=group_name"
+      - name: Kill URL
+        description: Shutdown endpoint
+        url: "http://localhost:{{ .PORT }}/-/quit"

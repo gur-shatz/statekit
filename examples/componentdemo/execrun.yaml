@@ -1,0 +1,17 @@
+title: componentdemo
+description: Standalone statekit component. Reads PORT from the environment.
+
+watch:
+  - "*.go"
+  - "*.html"
+  - "../../*.go"
+  - "../../scraper/*.go"
+  - "../../storage/*.go"
+  - "../../go.mod"
+  - "../../go.sum"
+
+build:
+  - go build -o ./bin/componentdemo .
+
+exec:
+  - ./bin/componentdemo

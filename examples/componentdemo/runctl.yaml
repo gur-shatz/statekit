@@ -1,0 +1,26 @@
+title: statekit componentdemo
+description: runctl wrapper for the standalone statekit component example.
+
+vars:
+  PORT: '{{ env "PORT" | default "19080" }}'
+  RUNCTL_PORT: '{{ env "RUNCTL_PORT" | default "19180" }}'
+  DATA_DIR: '{{ env "DATA_DIR" | default "/tmp/statekit-componentdemo" }}'
+
+logs_dir: "{{ .DATA_DIR }}/logs"
+
+api:
+  port: [[ .RUNCTL_PORT | int ]]
+
+targets:
+  componentdemo:
+    config: execrun.yaml
+    links:
+      - name: UI
+        description: Liveness page
+        url: "http://localhost:{{ .PORT }}/"
+      - name: State
+        description: Aggregated state (YAML)
+        url: "http://localhost:{{ .PORT }}/state"
+      - name: Metrics
+        description: Prometheus metrics
+        url: "http://localhost:{{ .PORT }}/metrics"

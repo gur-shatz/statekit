@@ -80,8 +80,7 @@ func newFakeComponent(name, region string, port int, degradeCache bool) *fakeCom
 
 func (this *fakeComponent) serve() *http.Server {
 	mux := http.NewServeMux()
-	mux.Handle("/state", this.reg.StateDisplayYAMLHandler())
-	mux.Handle("/metrics", this.reg.PrometheusHandler())
+	this.reg.Mount(mux, "/")
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/" {
 			http.NotFound(w, r)
@@ -192,8 +191,7 @@ func main() {
 	_ = scraperReg.RegisterCollectors(sc.MetricsCollector())
 
 	scraperMux := http.NewServeMux()
-	scraperMux.Handle("/state", scraperReg.StateDisplayYAMLHandler())
-	scraperMux.Handle("/metrics", scraperReg.PrometheusHandler())
+	scraperReg.Mount(scraperMux, "/")
 	scraperSrv := &http.Server{Addr: fmt.Sprintf(":%d", portScraper), Handler: scraperMux}
 
 	go func() {

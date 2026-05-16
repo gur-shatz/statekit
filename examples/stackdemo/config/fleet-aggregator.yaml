@@ -1,0 +1,57 @@
+labels:
+  scraper: fleet-aggregator
+  role: fleet
+
+defaults:
+  interval: 2s
+  timeout: 1s
+  expiration: 30s
+  http_liveness:
+    expect_status: [200]
+    max_latency: 1s
+    failure_policy:
+      fail_after: 2
+      recover_after: 1
+
+targets:
+  - id: regional-east
+    name: regional-east
+    group_name: regional-scrapers
+    base_url: http://localhost:19110/scraper/east
+    labels:
+      region: us-east-1
+      tier: regional
+    liveness:
+      - id: up
+        path: /state?format=short
+        labels:
+          probe: state
+    state_aggregation:
+      path: /state
+      labels:
+        subsystem: regional-state
+    metrics:
+      paths: [/metrics]
+      labels:
+        subsystem: regional-metrics
+
+  - id: regional-west
+    name: regional-west
+    group_name: regional-scrapers
+    base_url: http://localhost:19110/scraper/west
+    labels:
+      region: us-west-2
+      tier: regional
+    liveness:
+      - id: up
+        path: /state?format=short
+        labels:
+          probe: state
+    state_aggregation:
+      path: /state
+      labels:
+        subsystem: regional-state
+    metrics:
+      paths: [/metrics]
+      labels:
+        subsystem: regional-metrics

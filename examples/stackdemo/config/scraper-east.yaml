@@ -1,0 +1,57 @@
+labels:
+  scraper: regional-east
+  region: us-east-1
+
+defaults:
+  interval: 2s
+  timeout: 1s
+  expiration: 20s
+  http_liveness:
+    expect_status: [200]
+    max_latency: 1s
+    failure_policy:
+      fail_after: 2
+      recover_after: 1
+
+targets:
+  - id: checkout-east
+    name: checkout-east
+    group_name: payments
+    base_url: http://localhost:19110/leaf/checkout-east
+    labels:
+      service: checkout
+      region: us-east-1
+    liveness:
+      - id: up
+        path: /
+        labels:
+          probe: http
+    state_aggregation:
+      path: /state
+      labels:
+        subsystem: component-state
+    metrics:
+      paths: [/metrics]
+      labels:
+        subsystem: component-metrics
+
+  - id: billing-east
+    name: billing-east
+    group_name: payments
+    base_url: http://localhost:19110/leaf/billing-east
+    labels:
+      service: billing
+      region: us-east-1
+    liveness:
+      - id: up
+        path: /
+        labels:
+          probe: http
+    state_aggregation:
+      path: /state
+      labels:
+        subsystem: component-state
+    metrics:
+      paths: [/metrics]
+      labels:
+        subsystem: component-metrics

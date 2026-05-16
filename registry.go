@@ -83,6 +83,10 @@ func (r *Registry) Snapshot() []Snapshot {
 
 	snaps := make([]Snapshot, 0, len(states))
 	for _, state := range states {
+		if collection, ok := state.(StateCollection); ok {
+			snaps = append(snaps, collection.Snapshots()...)
+			continue
+		}
 		snaps = append(snaps, state.Snapshot())
 	}
 	return snaps

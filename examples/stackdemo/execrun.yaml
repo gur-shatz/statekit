@@ -1,0 +1,22 @@
+title: stackdemo
+description: Three-layer statekit fleet (leaves, scrapers, fleet aggregator) in one process.
+
+vars:
+  ADDR: '{{ env "ADDR" | default ":19110" }}'
+  FLAGS: '{{ env "FLAGS" | default "-kill-url" }}'
+
+watch:
+  - "*.go"
+  - "*.html"
+  - "config/*.yaml"
+  - "../../*.go"
+  - "../../scraper/*.go"
+  - "../../storage/*.go"
+  - "../../go.mod"
+  - "../../go.sum"
+
+build:
+  - go build -o ./bin/stackdemo .
+
+exec:
+  - ./bin/stackdemo -addr={{ .ADDR }} {{ .FLAGS }}

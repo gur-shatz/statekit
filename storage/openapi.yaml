@@ -1,0 +1,266 @@
+openapi: 3.0.3
+info:
+  title: statekit storage API
+  version: 0.1.0
+  description: Query API for stored statekit state documents.
+paths:
+  /state/doc:
+    post:
+      summary: Ingest a statekit display document
+      description: Accepts the YAML document served by a component's /state endpoint.
+      parameters:
+        - name: observed_at
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date-time
+      requestBody:
+        required: true
+        content:
+          text/yaml:
+            schema:
+              $ref: '#/components/schemas/StateDisplayDocument'
+      responses:
+        '204':
+          description: Stored
+  /state/current:
+    get:
+      summary: List current states
+      parameters:
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [pass, warn, fail, down]
+        - name: group_name
+          in: query
+          schema:
+            type: string
+        - name: label.region
+          in: query
+          description: Filter by a normalized label. Any label.<name> query key is accepted.
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Current states
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/CurrentState'
+  /state/groups:
+    get:
+      summary: Group current states
+      parameters:
+        - name: by
+          in: query
+          description: Grouping key. Repeat or comma-separate. Use group_name, status, importance, scraped_from, or label:<name>.
+          schema:
+            type: array
+            items:
+              type: string
+          style: form
+          explode: true
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [pass, warn, fail, down]
+        - name: group_name
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Group buckets
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/GroupBucket'
+  /state/events:
+    get:
+      summary: List transition events
+      parameters:
+        - name: identity
+          in: query
+          schema:
+            type: string
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+      responses:
+        '200':
+          description: State events
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/StateEvent'
+  /openapi.yaml:
+    get:
+      summary: Return this OpenAPI document
+      responses:
+        '200':
+          description: OpenAPI YAML
+          content:
+            text/yaml:
+              schema:
+                type: string
+components:
+  schemas:
+    StateDisplayDocument:
+      type: object
+      required: [kind, label_path, states]
+      properties:
+        kind:
+          type: string
+          example: statekit.state.v1
+        label_path:
+          type: array
+          items:
+            $ref: '#/components/schemas/StateDisplayLabel'
+        states:
+          type: array
+          items:
+            $ref: '#/components/schemas/Snapshot'
+    StateDisplayLabel:
+      type: object
+      required: [name, value]
+      properties:
+        name:
+          type: string
+        value:
+          type: string
+    Snapshot:
+      type: object
+      required: [name, status, importance, changed_at, changed_secs_ago]
+      properties:
+        name:
+          type: string
+        scraped_from:
+          type: string
+        scrape_path:
+          type: string
+        status:
+          type: string
+          enum: [pass, warn, fail, down]
+        importance:
+          type: string
+          enum: [important, informational]
+        help:
+          type: string
+        reason:
+          type: string
+        changed_at:
+          type: string
+          format: date-time
+        changed_secs_ago:
+          type: integer
+        history:
+          type: array
+          items:
+            type: object
+        checks:
+          type: array
+          items:
+            $ref: '#/components/schemas/Snapshot'
+      additionalProperties: true
+    CurrentState:
+      type: object
+      allOf:
+        - $ref: '#/components/schemas/StateNode'
+      properties:
+        observation:
+          $ref: '#/components/schemas/CurrentObservation'
+    StateNode:
+      type: object
+      properties:
+        identity:
+          type: string
+        parent_identity:
+          type: string
+        name:
+          type: string
+        scraped_from:
+          type: string
+        scrape_path:
+          type: string
+        importance:
+          type: string
+        help:
+          type: string
+        group_name:
+          type: string
+        labels:
+          type: object
+          additionalProperties:
+            type: string
+        first_seen_at:
+          type: string
+          format: date-time
+        last_seen_at:
+          type: string
+          format: date-time
+        metadata_hash:
+          type: string
+    CurrentObservation:
+      type: object
+      properties:
+        status:
+          type: string
+        reason:
+          type: string
+        changed_at:
+          type: string
+          format: date-time
+        changed_secs_ago:
+          type: integer
+        observed_at:
+          type: string
+          format: date-time
+        data:
+          type: object
+        data_hash:
+          type: string
+    GroupBucket:
+      type: object
+      properties:
+        values:
+          type: object
+          additionalProperties:
+            type: string
+        status_counts:
+          type: object
+          additionalProperties:
+            type: integer
+        total:
+          type: integer
+        worst_status:
+          type: string
+    StateEvent:
+      type: object
+      properties:
+        event_key:
+          type: string
+        identity:
+          type: string
+        status:
+          type: string
+        reason:
+          type: string
+        changed_at:
+          type: string
+          format: date-time
+        observed_at:
+          type: string
+          format: date-time
+        data:
+          type: object

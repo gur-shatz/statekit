@@ -33,8 +33,7 @@ db.Fail("connection refused", nil)
 requests.Inc()
 inflight.Set(2)
 
-http.Handle("/state", reg.StateDisplayYAMLHandler())
-http.Handle("/metrics", reg.PrometheusHandler())
+reg.Mount(http.DefaultServeMux, "/")
 ```
 
 ## State

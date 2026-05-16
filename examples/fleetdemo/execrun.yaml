@@ -1,0 +1,16 @@
+title: fleetdemo
+description: Two fake components and a scraper in a single self-contained process.
+
+watch:
+  - "*.go"
+  - "../../*.go"
+  - "../../scraper/*.go"
+  - "../../storage/*.go"
+  - "../../go.mod"
+  - "../../go.sum"
+
+build:
+  - go build -o ./bin/fleetdemo .
+
+exec:
+  - ./bin/fleetdemo

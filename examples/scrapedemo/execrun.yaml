@@ -1,0 +1,21 @@
+title: scrapedemo
+description: Scraper that polls another statekit component and re-serves it.
+
+vars:
+  ADDR: '{{ env "ADDR" | default ":19081" }}'
+  CONFIG: '{{ env "CONFIG" | default "scraper.yaml" }}'
+
+watch:
+  - "*.go"
+  - "*.yaml"
+  - "../../*.go"
+  - "../../scraper/*.go"
+  - "../../storage/*.go"
+  - "../../go.mod"
+  - "../../go.sum"
+
+build:
+  - go build -o ./bin/scrapedemo .
+
+exec:
+  - ./bin/scrapedemo -addr={{ .ADDR }} -config={{ .CONFIG }}

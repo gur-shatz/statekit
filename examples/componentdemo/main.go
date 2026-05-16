@@ -193,8 +193,7 @@ func main() {
 	mux.HandleFunc("POST /state", component.handleSetState)
 	mux.HandleFunc("POST /outcome", component.handleRecordOutcome)
 	mux.HandleFunc("POST /metric", component.handleSetMetric)
-	mux.Handle("/state", reg.StateDisplayYAMLHandler())
-	mux.Handle("/metrics", reg.PrometheusHandler())
+	reg.Mount(mux, "/")
 
 	port := os.Getenv("PORT")
 	if port == "" {

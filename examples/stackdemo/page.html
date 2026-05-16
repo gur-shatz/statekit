@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{.Name}} state</title>
+  <style>
+    :root { font-family: Inter, ui-sans-serif, system-ui, sans-serif; color: #17202a; background: #f6f7f9; }
+    body { margin: 0; }
+    main { width: min(980px, calc(100% - 32px)); margin: 0 auto; padding: 24px 0 40px; }
+    header { display: flex; align-items: end; justify-content: space-between; gap: 16px; margin-bottom: 18px; }
+    h1 { margin: 0; font-size: 26px; }
+    h2 { margin: 0 0 10px; font-size: 16px; }
+    a { color: #1b5fc1; font-weight: 650; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    .links { display: flex; gap: 12px; flex-wrap: wrap; }
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; align-items: start; }
+    .panel { background: #fff; border: 1px solid #d9dee7; border-radius: 8px; padding: 14px; }
+    .state { display: grid; grid-template-columns: 120px 90px 1fr; gap: 10px; align-items: center; padding: 9px 0; border-bottom: 1px solid #edf0f4; }
+    .state:last-child { border-bottom: 0; }
+    .name { font-weight: 720; }
+    .pill { display: inline-flex; justify-content: center; border-radius: 999px; min-width: 64px; padding: 4px 8px; font-size: 12px; font-weight: 780; text-transform: uppercase; }
+    .pass { background: #dff7e8; color: #14683a; }
+    .warn { background: #fff2c6; color: #8a5a00; }
+    .fail { background: #ffe1df; color: #9b1c16; }
+    .down { background: #e5e7eb; color: #111827; }
+    .muted { color: #526070; overflow-wrap: anywhere; }
+    form { display: grid; gap: 10px; }
+    .row { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+    label { display: grid; gap: 5px; color: #526070; font-size: 13px; font-weight: 650; }
+    select, input, button { width: 100%; min-height: 38px; border: 1px solid #c9d1dd; border-radius: 6px; padding: 8px 10px; font: inherit; }
+    button { border-color: #1f6feb; background: #1f6feb; color: #fff; font-weight: 720; cursor: pointer; }
+    @media (max-width: 760px) { header, .grid { display: block; } .links { margin-top: 10px; } .panel { margin-bottom: 14px; } .row, .state { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <div>
+        <h1>{{.Name}}</h1>
+        <div class="muted">{{.Group}} · {{.Region}} · <span class="pill {{.Snapshot.Status}}">{{.Snapshot.Status}}</span> {{.Snapshot.Reason}}</div>
+      </div>
+      <nav class="links">
+        <a href="/">stack</a>
+        <a href="{{.Prefix}}/state">state</a>
+        <a href="{{.Prefix}}/metrics">metrics</a>
+      </nav>
+    </header>
+
+    <div class="grid">
+      <section class="panel">
+        <h2>States</h2>
+        {{range .Snapshot.Checks}}
+        <div class="state">
+          <div class="name">{{.Name}}</div>
+          <span class="pill {{.Status}}">{{.Status}}</span>
+          <div class="muted">{{.Reason}}</div>
+        </div>
+        {{end}}
+      </section>
+
+      <section class="panel">
+        <h2>Set State</h2>
+        <form method="post" action="{{.Prefix}}/set">
+          <div class="row">
+            <label>Target
+              <select name="target">
+                <option value="database">database</option>
+                <option value="cache">cache</option>
+                <option value="queue">queue</option>
+              </select>
+            </label>
+            <label>Status
+              <select name="status">
+                <option value="pass">pass</option>
+                <option value="warn">warn</option>
+                <option value="fail">fail</option>
+                <option value="down">down</option>
+              </select>
+            </label>
+            <label>Reason
+              <input name="reason" value="operator changed state">
+            </label>
+          </div>
+          <button type="submit">Apply</button>
+        </form>
+      </section>
+
+      <section class="panel">
+        <h2>Metrics</h2>
+        <form method="post" action="{{.Prefix}}/metric">
+          <label>Queue Depth
+            <input name="queue_depth" value="{{.QueueDepth}}">
+          </label>
+          <button type="submit">Update</button>
+        </form>
+      </section>
+    </div>
+  </main>
+</body>
+</html>

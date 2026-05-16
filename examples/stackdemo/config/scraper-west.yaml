@@ -1,0 +1,57 @@
+labels:
+  scraper: regional-west
+  region: us-west-2
+
+defaults:
+  interval: 2s
+  timeout: 1s
+  expiration: 20s
+  http_liveness:
+    expect_status: [200]
+    max_latency: 1s
+    failure_policy:
+      fail_after: 2
+      recover_after: 1
+
+targets:
+  - id: checkout-west
+    name: checkout-west
+    group_name: payments
+    base_url: http://localhost:19110/leaf/checkout-west
+    labels:
+      service: checkout
+      region: us-west-2
+    liveness:
+      - id: up
+        path: /
+        labels:
+          probe: http
+    state_aggregation:
+      path: /state
+      labels:
+        subsystem: component-state
+    metrics:
+      paths: [/metrics]
+      labels:
+        subsystem: component-metrics
+
+  - id: search-west
+    name: search-west
+    group_name: discovery
+    base_url: http://localhost:19110/leaf/search-west
+    labels:
+      service: search
+      region: us-west-2
+    liveness:
+      - id: up
+        path: /
+        labels:
+          probe: http
+    state_aggregation:
+      path: /state
+      labels:
+        subsystem: component-state
+    metrics:
+      paths: [/metrics]
+      labels:
+        subsystem: component-metrics

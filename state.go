@@ -205,6 +205,17 @@ type State interface {
 	Snapshot() Snapshot
 }
 
+// StateCollection can be registered when a producer contributes multiple
+// top-level states. Snapshot is still available as a summary/fallback, while
+// Snapshots is used by Registry display and Prometheus output.
+//
+// Scrapers use this to add scraped states flatly without wrapping them in
+// checks or mutating the remote check hierarchy.
+type StateCollection interface {
+	State
+	Snapshots() []Snapshot
+}
+
 type clock func() time.Time
 
 var defaultClock clock = time.Now
