@@ -208,9 +208,7 @@ func main() {
 
 	<-ctx.Done()
 	log.Println("shutting down")
-	shutCtx, shutCancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer shutCancel()
-	_ = eastSrv.Shutdown(shutCtx)
-	_ = westSrv.Shutdown(shutCtx)
-	_ = scraperSrv.Shutdown(shutCtx)
+	_ = eastSrv.Close()
+	_ = westSrv.Close()
+	_ = scraperSrv.Close()
 }

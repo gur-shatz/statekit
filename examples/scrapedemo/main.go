@@ -24,7 +24,6 @@ import (
 	"os/signal"
 	"path/filepath"
 	"syscall"
-	"time"
 
 	"github.com/gur-shatz/statekit"
 	"github.com/gur-shatz/statekit/scraper"
@@ -85,7 +84,5 @@ func main() {
 
 	<-ctx.Done()
 	log.Println("shutting down")
-	shutCtx, shutCancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer shutCancel()
-	_ = server.Shutdown(shutCtx)
+	_ = server.Close()
 }
