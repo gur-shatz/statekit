@@ -27,6 +27,23 @@ func (r *Registry) Prometheus(w io.Writer) error {
 	}
 	r.mu.RUnlock()
 
+	descByName := make(map[string]PrometheusDesc, len(descs))
+	for _, desc := range descs {
+		descByName[desc.Name] = desc
+	}
+	for _, collector := range collectors {
+		for _, desc := range collector.DescribePrometheus() {
+			existing, ok := descByName[desc.Name]
+			if ok && !samePrometheusDesc(existing, desc) {
+				return fmt.Errorf("conflicting prometheus descriptor %q", desc.Name)
+			}
+			if !ok {
+				descs = append(descs, desc)
+				descByName[desc.Name] = desc
+			}
+		}
+	}
+
 	samples := make([]PrometheusSample, 0)
 	for _, snap := range r.Snapshot() {
 		samples = append(samples, stateSamples(snap)...)
@@ -43,7 +60,8 @@ func (r *Registry) Prometheus(w io.Writer) error {
 	})
 	samplesByName := make(map[string][]PrometheusSample)
 	for _, sample := range samples {
-		samplesByName[sample.Name] = append(samplesByName[sample.Name], sample)
+		descName := prometheusDescName(sample.Name, descs)
+		samplesByName[descName] = append(samplesByName[descName], sample)
 	}
 
 	sort.Slice(descs, func(i, j int) bool {
@@ -73,13 +91,41 @@ func (r *Registry) Prometheus(w io.Writer) error {
 	return nil
 }
 
+func prometheusDescName(sampleName string, descs []PrometheusDesc) string {
+	for _, desc := range descs {
+		if desc.Type != PrometheusHistogram {
+			continue
+		}
+		if sampleName == desc.Name ||
+			sampleName == desc.Name+"_bucket" ||
+			sampleName == desc.Name+"_sum" ||
+			sampleName == desc.Name+"_count" {
+			return desc.Name
+		}
+	}
+	return sampleName
+}
+
+func samePrometheusDesc(a, b PrometheusDesc) bool {
+	return a.Help == b.Help && a.Type == b.Type && slicesEqual(a.Labels, b.Labels)
+}
+
+func slicesEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
 func writePrometheusSamples(w io.Writer, labels map[string]string, samples []PrometheusSample) error {
 	for _, sample := range samples {
 		merged := maps.Clone(labels)
 		for k, v := range sample.Labels {
-			if _, exists := merged[k]; exists {
-				return fmt.Errorf("prometheus label %q conflicts with registry label", k)
-			}
 			merged[k] = v
 		}
 		if _, err := fmt.Fprintf(w, "%s%s %g\n", sample.Name, formatLabels(merged), sample.Value); err != nil {

@@ -1,0 +1,17 @@
+title: httpcheckdemo
+description: Interactive demo for HTTPMetrics-backed state checks.
+
+watch:
+  - "*.go"
+  - "*.html"
+  - "../../*.go"
+  - "../../collectors/*.go"
+  - "../../scraper/*.go"
+  - "../../go.mod"
+  - "../../go.sum"
+
+build:
+  - go build -o ./bin/httpcheckdemo .
+
+exec:
+  - ./bin/httpcheckdemo

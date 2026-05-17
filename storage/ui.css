@@ -58,6 +58,9 @@ button:hover { border-color: #1f6feb; }
   gap: 12px;
   align-items: start;
 }
+.systemTimelinePane {
+  margin-bottom: 12px;
+}
 .paneHeader {
   min-height: 44px;
   display: flex;
@@ -66,6 +69,13 @@ button:hover { border-color: #1f6feb; }
   gap: 12px;
   border-bottom: 1px solid #e7ebf0;
   padding: 8px 10px;
+}
+.paneControls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: end;
 }
 .check { display: inline-flex; align-items: center; gap: 6px; color: #526070; font-size: 13px; }
 
@@ -179,6 +189,53 @@ button:hover { border-color: #1f6feb; }
   align-items: center;
   color: #526070;
   font-size: 13px;
+}
+.systemTimelineViz {
+  min-height: 360px;
+}
+.systemTimelineViz .vis-timeline {
+  border: 0;
+}
+.systemTimelineViz .vis-custom-time.now-marker {
+  background: #1f6feb;
+  width: 2px;
+}
+.systemTimelineViz .vis-custom-time.now-marker::after {
+  content: "now";
+  position: absolute;
+  top: 6px;
+  right: 5px;
+  border-radius: 999px;
+  background: #1f6feb;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 760;
+  line-height: 1;
+  padding: 3px 6px;
+}
+.vis-item.timeline-pass {
+  background: #dff7e8;
+  border-color: #8ed5aa;
+  color: #14683a;
+}
+.vis-item.timeline-warn {
+  background: #fff2c6;
+  border-color: #e1bd56;
+  color: #8a5a00;
+}
+.vis-item.timeline-fail {
+  background: #ffe1df;
+  border-color: #e59690;
+  color: #9b1c16;
+}
+.vis-item.timeline-down {
+  background: #e5e7eb;
+  border-color: #aeb4be;
+  color: #111827;
+}
+.vis-item .vis-item-content {
+  font-size: 12px;
+  font-weight: 680;
 }
 .truncate { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .empty { padding: 16px; color: #647082; }

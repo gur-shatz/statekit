@@ -36,6 +36,79 @@ inflight.Set(2)
 reg.Mount(http.DefaultServeMux, "/")
 ```
 
+## Built-in collectors
+
+Common instrumentation lives in the `collectors` package:
+
+```go
+import (
+	"net/http"
+	"time"
+
+	"github.com/gur-shatz/statekit"
+	"github.com/gur-shatz/statekit/collectors"
+)
+
+reg := statekit.NewRegistry()
+
+httpMetrics := collectors.NewHTTPMetrics(collectors.WithHTTPMetricsWindow(5 * time.Minute))
+runtimeMetrics := collectors.NewRuntimeMetrics()
+reg.RegisterCollectors(httpMetrics, runtimeMetrics)
+
+httpState := statekit.NewStateAggregator("http")
+httpState.Add(
+	collectors.NewHTTPErrorRatioCheck(httpMetrics, "http errors", 20, 0, 0.05, 0),
+	collectors.NewHTTPAverageLatencyCheck(httpMetrics, "http latency", 250*time.Millisecond, 0, 0),
+)
+reg.Register(httpState)
+
+mux := http.NewServeMux()
+mux.HandleFunc("GET /orders/{id}", getOrder)
+
+http.ListenAndServe(":8080", httpMetrics.Middleware(mux))
+```
+
+`HTTPMetrics` records global measurements that are available locally:
+
+- `httpMetrics.Requests()`
+- `httpMetrics.RequestsPerSecond()`
+- `httpMetrics.Errors()`
+- `httpMetrics.ErrorsPerSecond()`
+- `httpMetrics.ErrorRatio()`
+- `httpMetrics.ErrorPercentage()`
+- `httpMetrics.AverageLatency()`
+
+These local measurements are evaluated over a rolling window. The default is
+five minutes; override it with `collectors.WithHTTPMetricsWindow`. Viewing a
+state does not advance or reset the window. Snapshots are cached for one second
+by default so frequent local reads stay cheap; use
+`collectors.WithHTTPMetricsSnapshotRefresh` to change that interval.
+
+Because the measurements are local, application behavior can use them directly:
+
+```go
+if httpMetrics.ErrorRatio() > 0.20 && httpMetrics.AverageLatency() > 200*time.Millisecond {
+	enableLoadShedding()
+}
+```
+
+The same measurements are exported for Prometheus:
+
+- `http_server_requests_total`
+- `http_server_errors_total`
+- `http_server_requests_per_second`
+- `http_server_errors_per_second`
+- `http_server_average_latency_seconds`
+
+Factories such as `NewHTTPErrorRatioCheck`, `NewHTTPErrorCountCheck`,
+`NewHTTPAverageLatencyCheck`, `NewHTTPRequestsPerSecondCheck`, and
+`NewHTTPErrorsPerSecondCheck` return regular state objects, so they can be
+inspected directly or added to an aggregate state.
+
+`RuntimeMetrics` exports Go's `runtime/metrics` values as Prometheus samples
+with a `go_runtime_` prefix. Use `collectors.WithRuntimeMetricsFilter` to keep
+only the runtime metrics you want.
+
 ## State
 
 A `State` is anything that implements the small interface:

@@ -1,5 +1,6 @@
 const apiBase = window.STATEKIT_API_BASE || "/api";
 const statusOrder = ["pass", "warn", "fail", "down"];
+const timelineNowMarkerID = "now-marker";
 
 const state = {
   status: "",
@@ -8,6 +9,8 @@ const state = {
   current: [],
   events: [],
   targets: [],
+  timelineWindowMs: 60 * 60 * 1000,
+  systemTimeline: null,
 };
 
 const $ = (id) => document.getElementById(id);
@@ -30,7 +33,7 @@ async function refresh() {
   $("lastRefresh").textContent = "Refreshing...";
   const [current, events, serverTargets] = await Promise.all([
     fetchJSON("/state/current"),
-    fetchJSON("/state/events?limit=100"),
+    fetchJSON("/state/events?limit=500"),
     fetchJSON("/state/targets"),
   ]);
   state.current = current;
@@ -179,6 +182,7 @@ function selectedTarget() {
 function render() {
   renderTotals();
   renderTargets();
+  renderSystemTimeline();
   renderStates();
   renderEvents();
   $("lastRefresh").textContent = `Updated ${new Date().toLocaleTimeString()} from ${state.projectionMode}`;
@@ -341,6 +345,205 @@ function renderEvents() {
   </div>${rows || `<div class="empty">No events for this target</div>`}`;
 }
 
+function renderSystemTimeline() {
+  const container = $("systemTimelineViz");
+  if (!container) return;
+  const now = new Date();
+  const rangeStart = new Date(now.getTime() - state.timelineWindowMs);
+  const intervals = buildTargetIntervals()
+    .filter((interval) => intervalOverlapsWindow(interval, rangeStart, now));
+  if (!window.vis?.Timeline || !window.vis?.DataSet) {
+    container.innerHTML = `<div class="empty">Timeline library unavailable</div>`;
+    return;
+  }
+  if (!intervals.length) {
+    if (state.systemTimeline) {
+      state.systemTimeline.destroy();
+      state.systemTimeline = null;
+    }
+    container.innerHTML = `<div class="empty">No recent issue transitions</div>`;
+    return;
+  }
+
+  const items = intervals.map((interval, idx) => ({
+    id: `system-${interval.targetKey}-${idx}`,
+    content: esc(`${interval.status} ${interval.targetName}`),
+    title: esc([interval.targetName, interval.status, interval.reasons.join("; ")].filter(Boolean).join(": ")),
+    start: interval.start,
+    end: interval.end || new Date(),
+    type: "range",
+    className: `timeline-${interval.status}`,
+  }));
+
+  const options = {
+    stack: true,
+    stackSubgroups: true,
+    selectable: true,
+    zoomMin: 1000,
+    zoomMax: 1000 * 60 * 60 * 24 * 14,
+    margin: { item: { horizontal: 8, vertical: 8 }, axis: 8 },
+    orientation: "top",
+    start: rangeStart,
+    end: now,
+  };
+
+  if (!state.systemTimeline) {
+    state.systemTimeline = new window.vis.Timeline(
+      container,
+      new window.vis.DataSet(items),
+      options,
+    );
+  } else {
+    state.systemTimeline.setItems(new window.vis.DataSet(items));
+    state.systemTimeline.setOptions(options);
+  }
+  setNowMarker(state.systemTimeline, now);
+  state.systemTimeline.setWindow(rangeStart, now, { animation: false });
+}
+
+function setNowMarker(timeline, now) {
+  try {
+    timeline.setCustomTime(now, timelineNowMarkerID);
+  } catch {
+    timeline.addCustomTime(now, timelineNowMarkerID);
+  }
+  if (typeof timeline.setCustomTimeTitle === "function") {
+    timeline.setCustomTimeTitle("now", timelineNowMarkerID);
+  }
+}
+
+function intervalOverlapsWindow(interval, rangeStart, rangeEnd) {
+  const start = Date.parse(interval.start);
+  const end = interval.end ? Date.parse(interval.end) : rangeEnd.getTime();
+  if (Number.isNaN(start) || Number.isNaN(end)) return false;
+  return start <= rangeEnd.getTime() && end >= rangeStart.getTime();
+}
+
+function buildTargetIntervals() {
+  const byIdentity = new Map(state.current.map((item) => [item.identity, item]));
+  const targetStates = new Map(state.targets.map((target) => [target.key, {
+    target,
+    open: null,
+    intervals: [],
+    statusByIdentity: new Map(),
+  }]));
+
+  state.events
+    .slice()
+    .sort((a, b) => Date.parse(a.observed_at || a.changed_at || 0) - Date.parse(b.observed_at || b.changed_at || 0))
+    .forEach((event) => {
+      const current = byIdentity.get(event.identity);
+      if (!current) return;
+      const targetKey = targetFor(current).key;
+      const bucket = targetStates.get(targetKey);
+      if (!bucket) return;
+      const status = event.status || "pass";
+      const when = event.observed_at || event.changed_at;
+      if (!when) return;
+
+      if (status === "pass") {
+        bucket.statusByIdentity.delete(event.identity);
+      } else {
+        bucket.statusByIdentity.set(event.identity, {
+          status,
+          reason: event.reason || current.observation?.reason || current.name,
+        });
+      }
+
+      const worstStatus = worstStatusFor(bucket.statusByIdentity);
+      if (worstStatus === "pass") {
+        closeInterval(bucket, when);
+        return;
+      }
+
+      const reasons = reasonsFor(bucket.statusByIdentity);
+      if (!bucket.open) {
+        bucket.open = {
+          targetKey,
+          targetName: bucket.target.name,
+          status: worstStatus,
+          reasons,
+          start: when,
+          end: "",
+        };
+        return;
+      }
+      if (bucket.open.status !== worstStatus) {
+        closeInterval(bucket, when);
+        bucket.open = {
+          targetKey,
+          targetName: bucket.target.name,
+          status: worstStatus,
+          reasons,
+          start: when,
+          end: "",
+        };
+        return;
+      }
+      bucket.open.reasons = reasons;
+    });
+
+  state.current.forEach((item) => {
+    const status = item.observation?.status || "pass";
+    if (status === "pass") return;
+    const targetKey = targetFor(item).key;
+    const bucket = targetStates.get(targetKey);
+    if (!bucket || bucket.statusByIdentity.has(item.identity)) return;
+
+    bucket.statusByIdentity.set(item.identity, {
+      status,
+      reason: item.observation?.reason || item.name,
+    });
+    const start = item.observation?.changed_at || item.observation?.observed_at;
+    if (!start) return;
+    if (!bucket.open) {
+      bucket.open = {
+        targetKey,
+        targetName: bucket.target.name,
+        status,
+        reasons: reasonsFor(bucket.statusByIdentity),
+        start,
+        end: "",
+      };
+      return;
+    }
+    if (Date.parse(start) < Date.parse(bucket.open.start)) {
+      bucket.open.start = start;
+    }
+    bucket.open.status = worstStatusFor(bucket.statusByIdentity);
+    bucket.open.reasons = reasonsFor(bucket.statusByIdentity);
+  });
+
+  const intervals = [];
+  targetStates.forEach((bucket) => {
+    if (bucket.open) intervals.push(bucket.open);
+    intervals.push(...bucket.intervals);
+  });
+  return intervals;
+}
+
+function closeInterval(bucket, end) {
+  if (!bucket.open) return;
+  bucket.open.end = end;
+  bucket.intervals.push(bucket.open);
+  bucket.open = null;
+}
+
+function worstStatusFor(statuses) {
+  let worst = "pass";
+  statuses.forEach(({ status }) => {
+    if (rank(status) > rank(worst)) worst = status;
+  });
+  return worst;
+}
+
+function reasonsFor(statuses) {
+  return [...statuses.values()]
+    .filter(({ reason }) => reason)
+    .map(({ status, reason }) => `${status}: ${reason}`)
+    .slice(0, 4);
+}
+
 function formatTime(value) {
   if (!value) return "";
   const d = new Date(value);
@@ -377,6 +580,10 @@ $("statusFilter").addEventListener("change", (e) => {
 $("projectionMode").addEventListener("change", (e) => {
   state.projectionMode = e.target.value;
   refresh().catch(showError);
+});
+$("timelineWindow").addEventListener("change", (e) => {
+  state.timelineWindowMs = Number(e.target.value) || 60 * 60 * 1000;
+  renderSystemTimeline();
 });
 $("refresh").addEventListener("click", () => refresh().catch(showError));
 

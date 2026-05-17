@@ -1,0 +1,29 @@
+title: statekit httpcheckdemo
+description: runctl wrapper for the HTTP check state demo.
+
+vars:
+  PORT: '{{ env "PORT" | default "19086" }}'
+  RUNCTL_PORT: '{{ env "RUNCTL_PORT" | default "19186" }}'
+  DATA_DIR: '{{ env "DATA_DIR" | default "/tmp/statekit-httpcheckdemo" }}'
+
+logs_dir: "{{ .DATA_DIR }}/logs"
+
+api:
+  port: [[ .RUNCTL_PORT | int ]]
+
+targets:
+  httpcheckdemo:
+    config: execrun.yaml
+    links:
+      - name: UI
+        description: Interactive traffic generator
+        url: "http://localhost:{{ .PORT }}/"
+      - name: Source state
+        description: Source state tree
+        url: "http://localhost:{{ .PORT }}/state"
+      - name: Scraped state
+        description: State mirrored by the scraper
+        url: "http://localhost:{{ .PORT }}/scraper/state"
+      - name: Metrics
+        description: Prometheus metrics
+        url: "http://localhost:{{ .PORT }}/metrics"

@@ -38,7 +38,9 @@ func (t *stateTracker) set(status Status, reason string, data map[string]any) {
 	if status == Pass {
 		reason = ""
 	}
-	if status == t.status && reason == t.reason {
+	if status == t.status {
+		t.reason = reason
+		t.data = data
 		return
 	}
 	now := t.now()

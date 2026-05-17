@@ -1,0 +1,29 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(PORT=8090 go run *)",
+      "Bash(kill %1 %2)",
+      "Bash(kill 64625 68445)",
+      "Bash(xargs -r kill)",
+      "Bash(kill 8738)",
+      "Bash(kill 89274)",
+      "Bash(kill -9 89274)",
+      "Bash(kill -9 97124)",
+      "Bash(xargs -r kill -9)",
+      "Bash(gh api *)",
+      "Bash(PORT=29110 RUNCTL_PORT=29210 go run github.com/gur-shatz/go-run/cmd/runctl@latest -config runctl.yaml)",
+      "Bash(ps -o pid,ppid,pgid,sid,command -p 44889,44891,44950,44962)",
+      "Bash(kill -TERM 44950)",
+      "Bash(ps -o pid,ppid,pgid,command -p 44950,44962)",
+      "Bash(kill 69043 69109)",
+      "Bash(ps -o pid,command -p 98908)",
+      "Bash(PORT=29113 RUNCTL_PORT=29213 go run github.com/gur-shatz/go-run/cmd/runctl@latest -config runctl.yaml)",
+      "Bash(ps -ax -o pid,ppid,command)",
+      "Read(//tmp/**)",
+      "Bash(ps -o pid,command -p 11132,22147,28541)",
+      "Bash(kill -9 28541 11132 22147)",
+      "Bash(ps -ax -o pid,command)",
+      "Bash(kill -9 44293 90553)"
+    ]
+  }
+}

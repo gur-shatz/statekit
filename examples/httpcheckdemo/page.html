@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>statekit HTTP checks</title>
+  <style>
+    :root {
+      color-scheme: light;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #f7f8fa;
+      color: #18212c;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; }
+    main { width: min(1160px, calc(100% - 32px)); margin: 0 auto; padding: 28px 0 40px; }
+    header { display: flex; align-items: end; justify-content: space-between; gap: 16px; margin-bottom: 20px; }
+    h1 { margin: 0; font-size: 28px; line-height: 1.12; }
+    h2 { margin: 0 0 12px; font-size: 16px; }
+    a { color: #1b5fc1; font-weight: 650; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    .links { display: flex; gap: 14px; flex-wrap: wrap; }
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; align-items: start; }
+    .panel { background: #fff; border: 1px solid #dbe1ea; border-radius: 8px; padding: 16px; box-shadow: 0 1px 2px rgb(15 23 42 / 0.06); }
+    .states, .metrics, .buttons { display: grid; gap: 10px; }
+    .state { display: grid; grid-template-columns: minmax(130px, 1fr) 86px minmax(160px, 2fr); gap: 10px; align-items: center; padding: 10px; border: 1px solid #e4e8ef; border-radius: 6px; }
+    .name { font-weight: 720; }
+    .pill { display: inline-flex; justify-content: center; min-width: 66px; border-radius: 999px; padding: 4px 8px; font-size: 13px; font-weight: 780; text-transform: uppercase; }
+    .pass { background: #dff7e8; color: #14683a; }
+    .warn { background: #fff2c6; color: #8a5a00; }
+    .fail { background: #ffe1df; color: #9b1c16; }
+    .down { background: #e5e7eb; color: #111827; }
+    .muted { color: #596579; }
+    .metric { border: 1px solid #e4e8ef; border-radius: 6px; padding: 10px; }
+    .metric strong { display: block; font-size: 24px; margin-top: 4px; }
+    form { display: grid; grid-template-columns: 1fr 90px; gap: 8px; }
+    input, button { width: 100%; min-height: 38px; border: 1px solid #c9d1dd; border-radius: 6px; padding: 8px 10px; font: inherit; }
+    button { border-color: #1f6feb; background: #1f6feb; color: #fff; font-weight: 720; cursor: pointer; }
+    button.slow { border-color: #8a5a00; background: #9a6700; }
+    button.fail { border-color: #9b1c16; background: #c0271f; color: #fff; }
+    .wide { grid-column: 1 / -1; }
+    @media (max-width: 820px) {
+      header, .grid { display: block; }
+      .links { margin-top: 12px; }
+      .panel { margin-bottom: 16px; }
+      .state, form { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <div>
+        <h1>HTTP checks demo</h1>
+        <div class="muted">Source state: <span class="pill {{.Source.Status}}">{{.Source.Status}}</span> {{.Source.Reason}}</div>
+      </div>
+      <nav class="links">
+        <a href="/state">Source state</a>
+        <a href="/metrics">Source metrics</a>
+        <a href="/scraper/state">Scraped state</a>
+        <a href="/scraper/metrics">Scraped metrics</a>
+      </nav>
+    </header>
+
+    <div class="grid">
+      <section class="panel">
+        <h2>Generate Traffic</h2>
+        <div class="buttons">
+          <form method="post" action="/generate">
+            <button name="kind" value="ok" type="submit">Good request</button>
+            <input name="count" type="number" min="1" max="50" value="1" aria-label="Count">
+          </form>
+          <form method="post" action="/generate">
+            <button class="slow" name="kind" value="slow" type="submit">Slow request</button>
+            <input name="count" type="number" min="1" max="50" value="1" aria-label="Count">
+          </form>
+          <form method="post" action="/generate">
+            <button class="fail" name="kind" value="fail" type="submit">Failing request</button>
+            <input name="count" type="number" min="1" max="50" value="1" aria-label="Count">
+          </form>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>Measurements</h2>
+        <div class="metrics">
+          {{range .Metrics}}
+          <div class="metric">
+            <span class="muted">{{.Name}}</span>
+            <strong>{{.Value}}</strong>
+          </div>
+          {{end}}
+        </div>
+      </section>
+
+      <section class="panel wide">
+        <h2>Source HTTP Checks</h2>
+        <div class="states">
+          {{range .Source.Checks}}
+          <div class="state">
+            <div class="name">{{.Name}}</div>
+            <span class="pill {{.Status}}">{{.Status}}</span>
+            <div class="muted">{{.Reason}}</div>
+          </div>
+          {{end}}
+        </div>
+      </section>
+
+      <section class="panel wide">
+        <h2>Scraper View</h2>
+        <div class="states">
+          {{range .Scraped}}
+          <div class="state">
+            <div class="name">{{.Name}}</div>
+            <span class="pill {{.Status}}">{{.Status}}</span>
+            <div class="muted">{{.Reason}}</div>
+          </div>
+          {{range .Checks}}
+          <div class="state">
+            <div class="name">{{.Name}}</div>
+            <span class="pill {{.Status}}">{{.Status}}</span>
+            <div class="muted">{{.Reason}}</div>
+          </div>
+          {{end}}
+          {{else}}
+          <div class="muted">Waiting for first scrape.</div>
+          {{end}}
+        </div>
+      </section>
+    </div>
+  </main>
+</body>
+</html>

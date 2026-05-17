@@ -4,6 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>statekit storage</title>
+  <link rel="stylesheet" href="https://unpkg.com/vis-timeline@8.5.1/styles/vis-timeline-graph2d.min.css">
   <link rel="stylesheet" href="ui.css">
 </head>
 <body>
@@ -31,6 +32,22 @@
     </header>
 
     <section class="summary" id="totals"></section>
+
+    <section class="pane systemTimelinePane">
+      <div class="paneHeader">
+        <h2>System Timeline</h2>
+        <div class="paneControls">
+          <span class="meta">warnings, failures, and down transitions</span>
+          <select id="timelineWindow" aria-label="Timeline window">
+            <option value="1800000">30 minutes</option>
+            <option value="3600000">1 hour</option>
+            <option value="7200000">2 hours</option>
+            <option value="86400000">24 hours</option>
+          </select>
+        </div>
+      </div>
+      <div class="systemTimelineViz" id="systemTimelineViz"></div>
+    </section>
 
     <section class="workspace">
       <div class="pane">
@@ -61,6 +78,7 @@
   <script>
     window.STATEKIT_API_BASE = "{{.APIBase}}";
   </script>
+  <script src="https://unpkg.com/vis-timeline@8.5.1/standalone/umd/vis-timeline-graph2d.min.js"></script>
   <script src="ui.js"></script>
 </body>
 </html>

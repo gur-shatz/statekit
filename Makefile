@@ -1,12 +1,13 @@
 PORT           ?= 19080
 SCRAPER_PORT   ?= 19081
+HTTPDEMO_PORT  ?= 19086
 STACKDEMO_PORT ?= 19110
 STACKDEMO_FLAGS ?= -kill-url
 
 RUNCTL ?= go run github.com/gur-shatz/go-run/cmd/runctl@latest
 RUNCTL_FLAGS ?= -ui
 
-.PHONY: help fmt test runctl demo demo-component demo-scraper demo-fleet demo-stack demo-urls
+.PHONY: help fmt test runctl demo demo-component demo-scraper demo-fleet demo-http-checks demo-stack demo-urls
 
 help:
 	@echo "statekit targets:"
@@ -16,6 +17,7 @@ help:
 	@echo "  make demo-scraper    Run scrapedemo under runctl (SCRAPER_PORT=$(SCRAPER_PORT))"
 	@echo "                       (expects demo-component running on PORT)"
 	@echo "  make demo-fleet      Run the self-contained fleetdemo under runctl"
+	@echo "  make demo-http-checks Run the interactive HTTP checks demo under runctl"
 	@echo "  make demo-stack      Run stackdemo under runctl"
 	@echo "                       (STACKDEMO_FLAGS=$(STACKDEMO_FLAGS))"
 	@echo "  make demo            Alias for demo-fleet"
@@ -24,6 +26,7 @@ help:
 	@echo "Variables:"
 	@echo "  PORT=$(PORT)              Port for componentdemo"
 	@echo "  SCRAPER_PORT=$(SCRAPER_PORT)      Port for scrapedemo"
+	@echo "  HTTPDEMO_PORT=$(HTTPDEMO_PORT)     Port for httpcheckdemo"
 	@echo "  STACKDEMO_PORT=$(STACKDEMO_PORT)     Port for stackdemo"
 	@echo "  STACKDEMO_FLAGS=$(STACKDEMO_FLAGS)  Extra flags for stackdemo"
 	@echo "  RUNCTL=$(RUNCTL)"
@@ -49,6 +52,9 @@ demo-scraper:
 demo-fleet:
 	cd examples/fleetdemo && $(RUNCTL) $(RUNCTL_FLAGS) -config runctl.yaml
 
+demo-http-checks:
+	cd examples/httpcheckdemo && PORT=$(HTTPDEMO_PORT) $(RUNCTL) $(RUNCTL_FLAGS) -config runctl.yaml
+
 demo-stack:
 	cd examples/stackdemo && PORT=$(STACKDEMO_PORT) FLAGS="$(STACKDEMO_FLAGS)" $(RUNCTL) $(RUNCTL_FLAGS) -config runctl.yaml
 
@@ -70,6 +76,13 @@ demo-urls:
 	@echo "  issuer-west:    http://localhost:19083/state"
 	@echo "  Scraper:        http://localhost:19084/state"
 	@echo "  Scraper metrics:http://localhost:19084/metrics"
+	@echo ""
+	@echo "httpcheckdemo:"
+	@echo "  runctl UI:      http://localhost:19186/"
+	@echo "  UI:             http://localhost:$(HTTPDEMO_PORT)/"
+	@echo "  Source state:   http://localhost:$(HTTPDEMO_PORT)/state"
+	@echo "  Scraped state:  http://localhost:$(HTTPDEMO_PORT)/scraper/state"
+	@echo "  Metrics:        http://localhost:$(HTTPDEMO_PORT)/metrics"
 	@echo ""
 	@echo "stackdemo:"
 	@echo "  runctl UI:      http://localhost:19210/"

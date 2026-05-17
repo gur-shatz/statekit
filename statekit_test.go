@@ -64,6 +64,33 @@ func TestManualStateClearsReasonForPass(t *testing.T) {
 	}
 }
 
+func TestManualStateUpdatesCurrentReasonAndDataWithoutHistoryForSameStatus(t *testing.T) {
+	now := time.Date(2026, 5, 15, 12, 0, 0, 0, time.UTC)
+	s := NewManualState("database", WithClock(func() time.Time { return now }))
+
+	s.Fail("latency above fail threshold", map[string]any{"latency_ms": 250})
+	first := s.Snapshot()
+	now = now.Add(2 * time.Second)
+	s.Fail("latency above fail threshold", map[string]any{"latency_ms": 190})
+	second := s.Snapshot()
+	now = now.Add(2 * time.Second)
+	s.Fail("connection refused", map[string]any{"latency_ms": 0})
+	third := s.Snapshot()
+
+	if len(second.History) != len(first.History) || len(third.History) != len(first.History) {
+		t.Fatalf("history changed for same-status updates: %d %d %d", len(first.History), len(second.History), len(third.History))
+	}
+	if !first.ChangedAt.Equal(second.ChangedAt) || !first.ChangedAt.Equal(third.ChangedAt) {
+		t.Fatalf("changed_at moved for same-status updates: %s %s %s", first.ChangedAt, second.ChangedAt, third.ChangedAt)
+	}
+	if third.Reason != "connection refused" {
+		t.Fatalf("current reason = %q, want latest reason", third.Reason)
+	}
+	if got := third.Data["latency_ms"]; got != 0 {
+		t.Fatalf("current data latency_ms = %#v, want latest data", got)
+	}
+}
+
 func TestAggregateStateCanAddChildrenProgressively(t *testing.T) {
 	root := NewStateAggregator("issuer")
 	db := NewManualState("database")
@@ -154,6 +181,70 @@ func TestRegistryEmitsStateAndCollectorPrometheus(t *testing.T) {
 			t.Fatalf("prometheus output missing %q:\n%s", want, text)
 		}
 	}
+}
+
+func TestRegistryPrometheusSampleLabelsOverrideRegistryLabels(t *testing.T) {
+	reg := NewRegistry(WithLabel("example", "registry"), WithLabel("region", "local"))
+	counter := NewCounterVec("requests_total", "Total requests.", "example")
+	counter.WithLabelValues("sample").Add(1)
+	if err := reg.RegisterCollectors(counter); err != nil {
+		t.Fatal(err)
+	}
+
+	var out bytes.Buffer
+	if err := reg.Prometheus(&out); err != nil {
+		t.Fatal(err)
+	}
+	text := out.String()
+	want := `requests_total{example="sample",region="local"} 1`
+	if !strings.Contains(text, want) {
+		t.Fatalf("prometheus output missing %q:\n%s", want, text)
+	}
+}
+
+func TestRegistryPrometheusRefreshesDynamicCollectorDescriptors(t *testing.T) {
+	reg := NewRegistry()
+	collector := &dynamicPrometheusCollector{}
+	if err := reg.RegisterCollectors(collector); err != nil {
+		t.Fatal(err)
+	}
+	collector.descs = []PrometheusDesc{{
+		Name: "scraped_requests_total",
+		Help: "Requests scraped from a target.",
+		Type: PrometheusCounter,
+	}}
+	collector.samples = []PrometheusSample{{
+		Name:  "scraped_requests_total",
+		Value: 2,
+	}}
+
+	var out bytes.Buffer
+	if err := reg.Prometheus(&out); err != nil {
+		t.Fatal(err)
+	}
+	text := out.String()
+	for _, want := range []string{
+		"# HELP scraped_requests_total Requests scraped from a target.",
+		"# TYPE scraped_requests_total counter",
+		"scraped_requests_total 2",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("prometheus output missing %q:\n%s", want, text)
+		}
+	}
+}
+
+type dynamicPrometheusCollector struct {
+	descs   []PrometheusDesc
+	samples []PrometheusSample
+}
+
+func (c *dynamicPrometheusCollector) DescribePrometheus() []PrometheusDesc {
+	return c.descs
+}
+
+func (c *dynamicPrometheusCollector) CollectPrometheus() []PrometheusSample {
+	return c.samples
 }
 
 func TestRegistryStateDisplayDocumentUsesLabelPath(t *testing.T) {
