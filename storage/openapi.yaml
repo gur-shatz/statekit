@@ -172,10 +172,18 @@ components:
           type: string
         reason:
           type: string
+        data:
+          type: object
+          additionalProperties: true
         changed_at:
           type: string
           format: date-time
         changed_secs_ago:
+          type: integer
+        updated_at:
+          type: string
+          format: date-time
+        updated_secs_ago:
           type: integer
         history:
           type: array
@@ -235,6 +243,11 @@ components:
           type: string
           format: date-time
         changed_secs_ago:
+          type: integer
+        updated_at:
+          type: string
+          format: date-time
+        updated_secs_ago:
           type: integer
         observed_at:
           type: string
@@ -316,6 +329,9 @@ components:
         changed_at:
           type: string
           format: date-time
+        updated_at:
+          type: string
+          format: date-time
         observed_at:
           type: string
           format: date-time
@@ -344,6 +360,9 @@ components:
           additionalProperties:
             type: string
         changed_at:
+          type: string
+          format: date-time
+        updated_at:
           type: string
           format: date-time
         observed_at:

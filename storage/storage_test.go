@@ -42,6 +42,9 @@ func TestMemoryStoreIngestsCurrentLabelsAndGroups(t *testing.T) {
 		if item.Observation.ObservedAt != observedAt {
 			t.Fatalf("observed_at = %v", item.Observation.ObservedAt)
 		}
+		if item.Observation.UpdatedAt.IsZero() {
+			t.Fatalf("updated_at missing from observation: %+v", item.Observation)
+		}
 	}
 
 	groups, err := store.Groups(context.Background(), GroupQuery{
@@ -257,6 +260,7 @@ func TestAPIExposesTargets(t *testing.T) {
 
 func testDocument() statekit.StateDisplayDocument {
 	changedAt := time.Date(2026, 5, 16, 11, 59, 0, 0, time.UTC)
+	updatedAt := time.Date(2026, 5, 16, 11, 59, 30, 0, time.UTC)
 	return statekit.StateDisplayDocument{
 		Kind: statekit.StateDisplayKind,
 		LabelPath: []statekit.StateDisplayLabel{
@@ -269,6 +273,8 @@ func testDocument() statekit.StateDisplayDocument {
 			Status:         statekit.Warn,
 			Importance:     statekit.Important,
 			Reason:         "database: slow",
+			UpdatedAt:      updatedAt,
+			UpdatedSecsAgo: 30,
 			ChangedAt:      changedAt,
 			ChangedSecsAgo: 60,
 			Data: map[string]any{
@@ -281,6 +287,8 @@ func testDocument() statekit.StateDisplayDocument {
 				Name:           "database",
 				Status:         statekit.Pass,
 				Importance:     statekit.Important,
+				UpdatedAt:      updatedAt,
+				UpdatedSecsAgo: 30,
 				ChangedAt:      changedAt,
 				ChangedSecsAgo: 60,
 				Data: map[string]any{

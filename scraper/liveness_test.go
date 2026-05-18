@@ -280,11 +280,14 @@ func TestLivenessSnapshotDataIncludesProbeMetadata(t *testing.T) {
 	if data["http_status"] != 204 {
 		t.Fatalf("http_status = %+v", data["http_status"])
 	}
-	if _, ok := data["updated_at"]; !ok {
-		t.Fatalf("updated_at missing from data: %+v", data)
+	if snap.UpdatedAt.IsZero() {
+		t.Fatalf("updated_at missing from snapshot: %+v", snap)
 	}
-	if _, ok := data["updated_secs_ago"]; !ok {
-		t.Fatalf("updated_secs_ago missing from data: %+v", data)
+	if snap.UpdatedSecsAgo < 0 {
+		t.Fatalf("updated_secs_ago = %d, want non-negative", snap.UpdatedSecsAgo)
+	}
+	if _, ok := data["updated_at"]; ok {
+		t.Fatalf("updated_at should not be in data: %+v", data)
 	}
 	labels, ok := data["labels"].(map[string]string)
 	if !ok {

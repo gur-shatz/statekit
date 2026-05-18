@@ -47,6 +47,8 @@ type CurrentObservation struct {
 	Reason         string         `json:"reason,omitempty"`
 	ChangedAt      time.Time      `json:"changed_at"`
 	ChangedSecsAgo int64          `json:"changed_secs_ago"`
+	UpdatedAt      time.Time      `json:"updated_at,omitempty"`
+	UpdatedSecsAgo int64          `json:"updated_secs_ago,omitempty"`
 	ObservedAt     time.Time      `json:"observed_at"`
 	Data           map[string]any `json:"data,omitempty"`
 	DataHash       string         `json:"data_hash,omitempty"`
@@ -63,6 +65,7 @@ type StateEvent struct {
 	Status     string         `json:"status"`
 	Reason     string         `json:"reason,omitempty"`
 	ChangedAt  time.Time      `json:"changed_at"`
+	UpdatedAt  time.Time      `json:"updated_at,omitempty"`
 	ObservedAt time.Time      `json:"observed_at"`
 	Data       map[string]any `json:"data,omitempty"`
 }
@@ -90,6 +93,7 @@ type TargetState struct {
 	GroupName  string            `json:"group_name,omitempty"`
 	Labels     map[string]string `json:"labels,omitempty"`
 	ChangedAt  time.Time         `json:"changed_at"`
+	UpdatedAt  time.Time         `json:"updated_at,omitempty"`
 	ObservedAt time.Time         `json:"observed_at"`
 	Checks     []TargetCheck     `json:"checks,omitempty"`
 }
@@ -103,6 +107,7 @@ type TargetCheck struct {
 	Help       string            `json:"help,omitempty"`
 	Labels     map[string]string `json:"labels,omitempty"`
 	ChangedAt  time.Time         `json:"changed_at"`
+	UpdatedAt  time.Time         `json:"updated_at,omitempty"`
 	ObservedAt time.Time         `json:"observed_at"`
 }
 
@@ -351,6 +356,7 @@ func flattenSnapshot(labelPath []statekit.StateDisplayLabel, path []string, pare
 	eventKey := hashJSON(map[string]any{
 		"identity":   identity,
 		"changed_at": snap.ChangedAt,
+		"updated_at": snap.UpdatedAt,
 		"status":     snap.Status.String(),
 		"reason":     snap.Reason,
 	})
@@ -376,6 +382,8 @@ func flattenSnapshot(labelPath []statekit.StateDisplayLabel, path []string, pare
 			Reason:         snap.Reason,
 			ChangedAt:      snap.ChangedAt,
 			ChangedSecsAgo: snap.ChangedSecsAgo,
+			UpdatedAt:      snap.UpdatedAt,
+			UpdatedSecsAgo: snap.UpdatedSecsAgo,
 			ObservedAt:     observedAt,
 			Data:           data,
 			DataHash:       hashJSON(data),
@@ -386,6 +394,7 @@ func flattenSnapshot(labelPath []statekit.StateDisplayLabel, path []string, pare
 			Status:     snap.Status.String(),
 			Reason:     snap.Reason,
 			ChangedAt:  snap.ChangedAt,
+			UpdatedAt:  snap.UpdatedAt,
 			ObservedAt: observedAt,
 			Data:       data,
 		},

@@ -11,6 +11,7 @@ type stateTracker struct {
 	status     Status
 	reason     string
 	data       map[string]any
+	updatedAt  time.Time
 	changedAt  time.Time
 	history    []HistoryEntry
 	maxHistory int
@@ -27,6 +28,7 @@ func newStateTracker(name string, importance Importance, help string, now clock)
 		importance: importance,
 		help:       help,
 		status:     Pass,
+		updatedAt:  t,
 		changedAt:  t,
 		history:    []HistoryEntry{{Timestamp: t, Status: Pass}},
 		maxHistory: defaultMaxHistory,
@@ -35,6 +37,8 @@ func newStateTracker(name string, importance Importance, help string, now clock)
 }
 
 func (t *stateTracker) set(status Status, reason string, data map[string]any) {
+	now := t.now()
+	t.updatedAt = now
 	if status == Pass {
 		reason = ""
 	}
@@ -43,7 +47,6 @@ func (t *stateTracker) set(status Status, reason string, data map[string]any) {
 		t.data = data
 		return
 	}
-	now := t.now()
 	t.changedAt = now
 	t.history = append(t.history, HistoryEntry{
 		Timestamp: now,
@@ -74,6 +77,8 @@ func (t *stateTracker) snapshot(children []Snapshot) Snapshot {
 		Importance:     t.importance,
 		Help:           t.help,
 		Reason:         t.reason,
+		UpdatedAt:      t.updatedAt,
+		UpdatedSecsAgo: int64(now.Sub(t.updatedAt).Seconds()),
 		Data:           t.data,
 		ChangedAt:      t.changedAt,
 		ChangedSecsAgo: int64(now.Sub(t.changedAt).Seconds()),

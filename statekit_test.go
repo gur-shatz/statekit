@@ -83,6 +83,12 @@ func TestManualStateUpdatesCurrentReasonAndDataWithoutHistoryForSameStatus(t *te
 	if !first.ChangedAt.Equal(second.ChangedAt) || !first.ChangedAt.Equal(third.ChangedAt) {
 		t.Fatalf("changed_at moved for same-status updates: %s %s %s", first.ChangedAt, second.ChangedAt, third.ChangedAt)
 	}
+	if !second.UpdatedAt.After(first.UpdatedAt) || !third.UpdatedAt.After(second.UpdatedAt) {
+		t.Fatalf("updated_at did not move for same-status updates: %s %s %s", first.UpdatedAt, second.UpdatedAt, third.UpdatedAt)
+	}
+	if third.UpdatedSecsAgo != 0 {
+		t.Fatalf("updated_secs_ago = %d, want 0 at fixed clock", third.UpdatedSecsAgo)
+	}
 	if third.Reason != "connection refused" {
 		t.Fatalf("current reason = %q, want latest reason", third.Reason)
 	}

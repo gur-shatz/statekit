@@ -131,6 +131,7 @@ func targetStateFromEntry(entry flattenedState) TargetState {
 		GroupName:  entry.Node.GroupName,
 		Labels:     cloneLabels(entry.Node.Labels),
 		ChangedAt:  entry.Current.ChangedAt,
+		UpdatedAt:  entry.Current.UpdatedAt,
 		ObservedAt: entry.Current.ObservedAt,
 	}
 }
@@ -145,6 +146,7 @@ func targetCheckFromEntry(entry flattenedState) TargetCheck {
 		Help:       entry.Node.Help,
 		Labels:     cloneLabels(entry.Node.Labels),
 		ChangedAt:  entry.Current.ChangedAt,
+		UpdatedAt:  entry.Current.UpdatedAt,
 		ObservedAt: entry.Current.ObservedAt,
 	}
 }

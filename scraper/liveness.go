@@ -62,6 +62,8 @@ func (this *livenessState) Snapshot() statekit.Snapshot {
 	if data := this.dataLocked(); len(data) > 0 {
 		snap.Data = data
 	}
+	snap.UpdatedAt = this.updatedAt
+	snap.UpdatedSecsAgo = int64(time.Since(this.updatedAt).Seconds())
 	this.mu.Unlock()
 	if this.scrapedFrom != "" {
 		snap.ScrapedFrom = this.scrapedFrom
@@ -130,10 +132,6 @@ func (this *livenessState) dataLocked() map[string]any {
 	}
 	if len(this.labels) > 0 {
 		data["labels"] = this.labels
-	}
-	if !this.updatedAt.IsZero() {
-		data["updated_at"] = this.updatedAt
-		data["updated_secs_ago"] = int64(time.Since(this.updatedAt).Seconds())
 	}
 	if ms := this.latency.Milliseconds(); ms > 0 {
 		data["latency_ms"] = ms

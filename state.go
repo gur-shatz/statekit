@@ -179,19 +179,19 @@ type HistoryEntry struct {
 
 // Snapshot is an immutable point-in-time view of a State.
 //
-// Data is inlined into the YAML output: the map's keys appear as
-// siblings of the snapshot's own fields rather than nested under
-// "data:". This keeps things like a liveness probe's updated_at,
-// latency_ms, etc. at the same depth as changed_at.
+// Data carries state-specific fields such as probe metadata, metric values, or
+// scraped labels. It stays nested under "data" in JSON and YAML.
 type Snapshot struct {
 	Name           string         `json:"name" yaml:"name"`
-	ScrapedFrom    string         `json:"scraped_from,omitempty" yaml:"scraped_from,omitempty"`
-	ScrapePath     string         `json:"scrape_path,omitempty" yaml:"scrape_path,omitempty"`
+	ScrapedFrom    string         `json:"scraped_from,omitempty" yaml:"scraped_from,omitempty"` // this is scraped data
+	ScrapePath     string         `json:"scrape_path,omitempty" yaml:"scrape_path,omitempty"`   // this is scraped data
 	Status         Status         `json:"status" yaml:"status"`
 	Importance     Importance     `json:"importance" yaml:"importance"`
 	Help           string         `json:"help,omitempty" yaml:"help,omitempty"`
 	Reason         string         `json:"reason,omitempty" yaml:"reason,omitempty"`
-	Data           map[string]any `json:"data,omitempty" yaml:",inline,omitempty"`
+	UpdatedAt      time.Time      `json:"updated_at,omitempty" yaml:"updated_at,omitempty"`
+	UpdatedSecsAgo int64          `json:"updated_secs_ago,omitempty" yaml:"updated_secs_ago,omitempty"`
+	Data           map[string]any `json:"data,omitempty" yaml:"data,omitempty"`
 	ChangedAt      time.Time      `json:"changed_at" yaml:"changed_at"`
 	ChangedSecsAgo int64          `json:"changed_secs_ago" yaml:"changed_secs_ago"`
 	History        []HistoryEntry `json:"history,omitempty" yaml:"history,omitempty"`
