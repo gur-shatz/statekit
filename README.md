@@ -21,8 +21,8 @@ app := statekit.NewStateAggregator("issuer")
 db := statekit.NewManualState("database")
 cache := statekit.NewManualState("cache")
 
-app.Add(db)
-app.AddInformational(cache)
+app.AddTest(db)
+app.AddInformationalTest(cache)
 reg.Register(app)
 
 requests := statekit.NewCounter("requests_total", "Total requests served.")
@@ -52,11 +52,11 @@ import (
 reg := statekit.NewRegistry()
 
 httpMetrics := collectors.NewHTTPMetrics(collectors.WithHTTPMetricsWindow(5 * time.Minute))
-runtimeMetrics := collectors.NewRuntimeMetrics()
+runtimeMetrics := collectors.NewRuntimeMetrics(collectors.WithRecommendedRuntimeMetrics())
 reg.RegisterCollectors(httpMetrics, runtimeMetrics)
 
 httpState := statekit.NewStateAggregator("http")
-httpState.Add(
+httpState.AddTest(
 	collectors.NewHTTPErrorRatioCheck(httpMetrics, "http errors", 20, 0, 0.05, 0),
 	collectors.NewHTTPAverageLatencyCheck(httpMetrics, "http latency", 250*time.Millisecond, 0, 0),
 )
@@ -106,8 +106,40 @@ Factories such as `NewHTTPErrorRatioCheck`, `NewHTTPErrorCountCheck`,
 inspected directly or added to an aggregate state.
 
 `RuntimeMetrics` exports Go's `runtime/metrics` values as Prometheus samples
-with a `go_runtime_` prefix. Use `collectors.WithRuntimeMetricsFilter` to keep
-only the runtime metrics you want.
+with a `go_runtime_` prefix. By default it exports every non-bad runtime metric
+Go exposes. Use `collectors.WithRuntimeMetricsWhitelist` to keep an explicit set
+by Prometheus name or raw `runtime/metrics` name, or
+`collectors.WithRecommendedRuntimeMetrics` to use `RecommendedRuntimeMetrics`:
+
+```go
+runtimeMetrics := collectors.NewRuntimeMetrics(collectors.WithRecommendedRuntimeMetrics())
+```
+
+The recommended set keeps goroutines, GC pauses, GC pause CPU, total mapped
+runtime memory, released heap memory, and scheduler latency.
+
+Scalar runtime metrics are also available locally through `Value`, using either
+Prometheus or raw `runtime/metrics` names:
+
+```go
+memory, ok := runtimeMetrics.Value("go_runtime_memory_classes_total_bytes")
+```
+
+Runtime checks can evaluate those local values over time. This flags sustained
+growth in total runtime memory over a five minute window:
+
+```go
+memoryGrowth := collectors.NewRuntimeIncreasingTrendCheck(
+	runtimeMetrics,
+	"runtime memory growth",
+	"go_runtime_memory_classes_total_bytes",
+	5*time.Minute,
+	5,
+	1024*1024,
+	5*1024*1024,
+	0,
+)
+```
 
 ## State
 
@@ -150,17 +182,18 @@ db.Fail("connection refused", nil)
 
 #### Aggregate state
 
-Derives a parent status from a tree of children. Children can be added
-progressively as subsystems initialize. Each child contributes its own
-status to the aggregate; the parent reports the worst.
+Derives a parent status from a flat set of leaf checks. Checks can be added
+progressively as subsystems initialize. Each check contributes its own status to
+the aggregate; the parent reports the worst. Aggregates reject other aggregates
+as checks, so state trees cannot accidentally recurse.
 
 ```go
 app := statekit.NewStateAggregator("issuer")
-app.Add(db)
-app.AddInformational(cache)
+app.AddTest(db)
+app.AddInformationalTest(cache)
 ```
 
-`AddInformational` caps a child's contribution at `warn` even if the child
+`AddInformationalTest` caps a child's contribution at `warn` even if the child
 itself reports `fail` or `down`. Use it for optional subsystems whose
 failure should not take the whole component down. The same cap can be
 attached to the state directly:

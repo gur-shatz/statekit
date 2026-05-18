@@ -152,6 +152,30 @@ func TestAggregateStateCanUseCustomWorstChildContribution(t *testing.T) {
 	}
 }
 
+func TestAggregateStateAddTestRejectsAggregates(t *testing.T) {
+	root := NewStateAggregator("issuer")
+	child := NewStateAggregator("database-group")
+
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("AddTest accepted aggregate child, want panic")
+		}
+	}()
+	root.AddTest(child)
+}
+
+func TestAggregateStateAddRejectsAggregates(t *testing.T) {
+	root := NewStateAggregator("issuer")
+	child := NewStateAggregator("database-group")
+
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("Add accepted aggregate child, want panic")
+		}
+	}()
+	root.Add(child)
+}
+
 func TestRegistryEmitsStateAndCollectorPrometheus(t *testing.T) {
 	reg := NewRegistry(WithLabel("component", "issuer"))
 	state := NewManualState("database")

@@ -45,7 +45,7 @@ type pageView struct {
 func newDemo(port string) *demo {
 	metrics := collectors.NewHTTPMetrics()
 	httpState := statekit.NewStateAggregator("http")
-	httpState.Add(
+	httpState.AddTest(
 		collectors.NewHTTPErrorRatioCheck(metrics, "error ratio", 5, 0.20, 0.50, 0),
 		collectors.NewHTTPAverageLatencyCheck(metrics, "average latency", 120*time.Millisecond, 220*time.Millisecond, 0),
 	)

@@ -40,3 +40,62 @@ func TestRuntimeMetricsRegistersAllDefaultDescriptors(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestRuntimeMetricsWhitelistAcceptsRuntimeName(t *testing.T) {
+	runtimeMetrics := NewRuntimeMetrics(WithRuntimeMetricsWhitelist("/sched/goroutines:goroutines"))
+	descs := runtimeMetrics.DescribePrometheus()
+	if len(descs) != 1 {
+		t.Fatalf("descs len = %d, want 1", len(descs))
+	}
+	if descs[0].Name != "go_runtime_sched_goroutines_goroutines" {
+		t.Fatalf("desc name = %q, want goroutines metric", descs[0].Name)
+	}
+}
+
+func TestRuntimeMetricsWhitelistAcceptsPrometheusName(t *testing.T) {
+	runtimeMetrics := NewRuntimeMetrics(WithRuntimeMetricsWhitelist("go_runtime_sched_goroutines_goroutines"))
+	descs := runtimeMetrics.DescribePrometheus()
+	if len(descs) != 1 {
+		t.Fatalf("descs len = %d, want 1", len(descs))
+	}
+	if descs[0].Name != "go_runtime_sched_goroutines_goroutines" {
+		t.Fatalf("desc name = %q, want goroutines metric", descs[0].Name)
+	}
+}
+
+func TestRuntimeMetricsValue(t *testing.T) {
+	runtimeMetrics := NewRuntimeMetrics(WithRuntimeMetricsWhitelist("go_runtime_sched_goroutines_goroutines"))
+	value, ok := runtimeMetrics.Value("go_runtime_sched_goroutines_goroutines")
+	if !ok {
+		t.Fatal("goroutines metric value not found")
+	}
+	if value <= 0 {
+		t.Fatalf("goroutines metric value = %f, want positive", value)
+	}
+}
+
+func TestRecommendedRuntimeMetrics(t *testing.T) {
+	runtimeMetrics := NewRuntimeMetrics(WithRecommendedRuntimeMetrics())
+	descs := runtimeMetrics.DescribePrometheus()
+	if len(descs) == 0 {
+		t.Fatal("recommended runtime metrics produced no descriptors")
+	}
+
+	got := map[string]struct{}{}
+	for _, desc := range descs {
+		got[desc.Name] = struct{}{}
+	}
+
+	for _, want := range []string{
+		"go_runtime_sched_goroutines_goroutines",
+		"go_runtime_gc_pauses_seconds",
+		"go_runtime_cpu_classes_gc_pause_cpu_seconds",
+		"go_runtime_memory_classes_total_bytes",
+		"go_runtime_memory_classes_heap_released_bytes",
+		"go_runtime_sched_latencies_seconds",
+	} {
+		if _, ok := got[want]; !ok {
+			t.Fatalf("recommended runtime metrics missing %q; got %#v", want, got)
+		}
+	}
+}

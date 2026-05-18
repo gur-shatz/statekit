@@ -70,8 +70,8 @@ func newLeaf(name, group, region, prefix string) *leafComponent {
 		statekit.WithHelp("Cache health. Degraded cache should warn but not fail the service."))
 	queue := statekit.NewManualState("queue",
 		statekit.WithHelp("Background queue processor."))
-	app.Add(database, queue)
-	app.AddInformational(cache)
+	app.AddTest(database, queue)
+	app.AddInformationalTest(cache)
 
 	requests := statekit.NewCounter(strings.ReplaceAll(name, "-", "_")+"_requests_total", "Total demo requests.")
 	queueDepth := statekit.NewGauge(strings.ReplaceAll(name, "-", "_")+"_queue_depth", "Current queue depth.")

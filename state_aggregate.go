@@ -2,6 +2,18 @@ package statekit
 
 import "sync"
 
+// AggregatedState is a state that owns a set of leaf tests/checks.
+//
+// Aggregates intentionally reject other AggregatedState values as children:
+// compose checks into one aggregate layer, then register multiple aggregates at
+// the registry level if the application wants separate groups.
+type AggregatedState interface {
+	State
+	AddTest(...State)
+	AddInformationalTest(...State)
+	AddTestWithWorstStatus(Status, ...State)
+}
+
 // AggregateState derives its status from child states. Children can be added
 // progressively as subsystems initialize.
 type AggregateState struct {
@@ -28,19 +40,30 @@ func (s *AggregateState) Name() string {
 }
 
 func (s *AggregateState) Add(children ...State) {
-	s.checkAddable(children)
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for _, child := range children {
-		s.children = append(s.children, aggregateChild{state: child, worstStatus: Down})
-	}
+	s.AddTest(children...)
+}
+
+func (s *AggregateState) AddTest(children ...State) {
+	s.addWithWorstStatus(Down, children...)
 }
 
 func (s *AggregateState) AddInformational(children ...State) {
-	s.AddWithWorstStatus(Warn, children...)
+	s.AddInformationalTest(children...)
+}
+
+func (s *AggregateState) AddInformationalTest(children ...State) {
+	s.AddTestWithWorstStatus(Warn, children...)
 }
 
 func (s *AggregateState) AddWithWorstStatus(worstStatus Status, children ...State) {
+	s.AddTestWithWorstStatus(worstStatus, children...)
+}
+
+func (s *AggregateState) AddTestWithWorstStatus(worstStatus Status, children ...State) {
+	s.addWithWorstStatus(worstStatus, children...)
+}
+
+func (s *AggregateState) addWithWorstStatus(worstStatus Status, children ...State) {
 	s.checkAddable(children)
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -49,39 +72,21 @@ func (s *AggregateState) AddWithWorstStatus(worstStatus Status, children ...Stat
 	}
 }
 
-// checkAddable panics if any child is nil or would introduce a cycle. Cycles
-// are programming errors: a state tree must be a DAG so Snapshot() terminates.
+// checkAddable panics if any child is nil or an aggregate. Aggregate children
+// are programming errors: checks should be leaves so Snapshot cannot recurse
+// back into an aggregate graph.
 func (s *AggregateState) checkAddable(children []State) {
 	for _, child := range children {
 		if child == nil {
-			panic("statekit: AggregateState.Add called with nil child")
+			panic("statekit: AggregateState.AddTest called with nil child")
 		}
-		if child == State(s) {
-			panic("statekit: AggregateState.Add would create a cycle (child is the parent)")
-		}
-		if agg, ok := child.(*AggregateState); ok && agg.containsState(s) {
-			panic("statekit: AggregateState.Add would create a cycle (parent reachable from child)")
+		if _, ok := child.(AggregatedState); ok {
+			panic("statekit: AggregateState.AddTest called with aggregate child: we don't allow recursive checks")
 		}
 	}
 }
 
-// containsState reports whether target is anywhere in this aggregate's subtree.
-func (s *AggregateState) containsState(target State) bool {
-	s.mu.RLock()
-	children := append([]aggregateChild(nil), s.children...)
-	s.mu.RUnlock()
-	for _, c := range children {
-		if c.state == target {
-			return true
-		}
-		if agg, ok := c.state.(*AggregateState); ok && agg.containsState(target) {
-			return true
-		}
-	}
-	return false
-}
-
-func (s *AggregateState) Snapshot() Snapshot {
+func (s *AggregateState) Snapshot() Snapshot {	
 	s.mu.RLock()
 	children := append([]aggregateChild(nil), s.children...)
 	s.mu.RUnlock()

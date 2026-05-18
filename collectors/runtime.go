@@ -13,10 +13,22 @@ type RuntimeMetricFilter func(metrics.Description) bool
 type RuntimeOption func(*RuntimeMetrics)
 
 type RuntimeMetrics struct {
-	descs  []metrics.Description
-	names  []string
-	prefix string
-	filter RuntimeMetricFilter
+	descs     []metrics.Description
+	names     []string
+	prefix    string
+	filter    RuntimeMetricFilter
+	whitelist map[string]struct{}
+}
+
+// RecommendedRuntimeMetrics is a small Prometheus-name whitelist for the runtime
+// signals that tend to be useful in application health decisions.
+var RecommendedRuntimeMetrics = []string{
+	"go_runtime_sched_goroutines_goroutines",
+	"go_runtime_gc_pauses_seconds",
+	"go_runtime_cpu_classes_gc_pause_cpu_seconds",
+	"go_runtime_memory_classes_total_bytes",
+	"go_runtime_memory_classes_heap_released_bytes",
+	"go_runtime_sched_latencies_seconds",
 }
 
 func NewRuntimeMetrics(opts ...RuntimeOption) *RuntimeMetrics {
@@ -32,7 +44,7 @@ func NewRuntimeMetrics(opts ...RuntimeOption) *RuntimeMetrics {
 	all := metrics.All()
 	seen := map[string]struct{}{}
 	for _, desc := range all {
-		if desc.Kind == metrics.KindBad || !r.filter(desc) {
+		if desc.Kind == metrics.KindBad || !r.runtimeMetricAllowed(desc.Name) || !r.filter(desc) {
 			continue
 		}
 		promName := prometheusMetricName(r.prefix, desc.Name)
@@ -58,6 +70,54 @@ func WithRuntimeMetricsFilter(filter RuntimeMetricFilter) RuntimeOption {
 			r.filter = filter
 		}
 	}
+}
+
+func WithRuntimeMetricsWhitelist(names ...string) RuntimeOption {
+	return func(r *RuntimeMetrics) {
+		r.whitelist = runtimeMetricNameSet(names)
+	}
+}
+
+func WithRecommendedRuntimeMetrics() RuntimeOption {
+	return WithRuntimeMetricsWhitelist(RecommendedRuntimeMetrics...)
+}
+
+func (r *RuntimeMetrics) Value(name string) (float64, bool) {
+	runtimeName, ok := r.runtimeMetricName(name)
+	if !ok {
+		return 0, false
+	}
+	samples := []metrics.Sample{{Name: runtimeName}}
+	metrics.Read(samples)
+	switch samples[0].Value.Kind() {
+	case metrics.KindUint64:
+		return float64(samples[0].Value.Uint64()), true
+	case metrics.KindFloat64:
+		return samples[0].Value.Float64(), true
+	default:
+		return 0, false
+	}
+}
+
+func (r *RuntimeMetrics) runtimeMetricAllowed(name string) bool {
+	if len(r.whitelist) == 0 {
+		return true
+	}
+	if _, ok := r.whitelist[name]; ok {
+		return true
+	}
+	_, ok := r.whitelist[prometheusMetricName(r.prefix, name)]
+	return ok
+}
+
+func (r *RuntimeMetrics) runtimeMetricName(name string) (string, bool) {
+	for _, desc := range metrics.All() {
+		runtimeName := desc.Name
+		if name == runtimeName || name == prometheusMetricName(r.prefix, runtimeName) {
+			return runtimeName, true
+		}
+	}
+	return "", false
 }
 
 func (r *RuntimeMetrics) DescribePrometheus() []statekit.PrometheusDesc {
@@ -96,6 +156,20 @@ func (r *RuntimeMetrics) CollectPrometheus() []statekit.PrometheusSample {
 		case metrics.KindFloat64Histogram:
 			out = append(out, runtimeHistogramSamples(name, sample.Value.Float64Histogram())...)
 		}
+	}
+	return out
+}
+
+func runtimeMetricNameSet(names []string) map[string]struct{} {
+	if len(names) == 0 {
+		return nil
+	}
+	out := make(map[string]struct{}, len(names))
+	for _, name := range names {
+		if name == "" {
+			continue
+		}
+		out[name] = struct{}{}
 	}
 	return out
 }

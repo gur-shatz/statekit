@@ -51,7 +51,7 @@ func newDemoComponent() *demoComponent {
 		queue:    statekit.NewGauge("demo_queue_depth", "Current demo worker queue depth."),
 		latency:  statekit.NewGauge("demo_latency_ms", "Current demo request latency in milliseconds."),
 	}
-	c.app.Add(c.database, c.cache, c.worker, c.upstream)
+	c.app.AddTest(c.database, c.cache, c.worker, c.upstream)
 	c.queue.Set(4)
 	c.latency.Set(42)
 	c.requests.Add(120)
