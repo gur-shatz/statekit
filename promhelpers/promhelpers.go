@@ -5,6 +5,8 @@
 package promhelpers
 
 import (
+	"fmt"
+
 	"github.com/gur-shatz/statekit"
 )
 
@@ -16,29 +18,13 @@ type Numeric interface {
 }
 
 // SamplesFromMap turns a map keyed by label value into one sample per entry,
-// all carrying the given metric name and a single label (labelKey -> map key).
+// all carrying the given metric name and a single label (labelKey -> map key),
+// and appends one unlabeled "<name>_total" sample whose value is the sum of m.
 // An empty map yields a nil slice. Sample order is not defined.
 func SamplesFromMap[V Numeric](name, labelKey string, m map[string]V) []statekit.PrometheusSample {
 	if len(m) == 0 {
 		return nil
 	}
-	samples := make([]statekit.PrometheusSample, 0, len(m))
-	for k, v := range m {
-		samples = append(samples, statekit.PrometheusSample{
-			Name:   name,
-			Labels: map[string]string{labelKey: k},
-			Value:  float64(v),
-		})
-	}
-	return samples
-}
-
-// SamplesFromMapWithTotal behaves like SamplesFromMap and additionally appends
-// one unlabeled sample whose value is the sum of m, named totalName. If
-// totalName is empty the total sample is omitted. An empty map still yields a
-// single total sample with value 0 when totalName is set, so the total metric
-// scrapes cleanly even on a cold start.
-func SamplesFromMapWithTotal[V Numeric](name, labelKey, totalName string, m map[string]V) []statekit.PrometheusSample {
 	var sum V
 	samples := make([]statekit.PrometheusSample, 0, len(m)+1)
 	for k, v := range m {
@@ -49,14 +35,9 @@ func SamplesFromMapWithTotal[V Numeric](name, labelKey, totalName string, m map[
 		})
 		sum += v
 	}
-	if totalName != "" {
-		samples = append(samples, statekit.PrometheusSample{
-			Name:  totalName,
-			Value: float64(sum),
-		})
-	}
-	if len(samples) == 0 {
-		return nil
-	}
+	samples = append(samples, statekit.PrometheusSample{
+		Name:  fmt.Sprintf("%s_total", name),
+		Value: float64(sum),
+	})
 	return samples
 }

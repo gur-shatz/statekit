@@ -7,34 +7,55 @@ import (
 	"github.com/gur-shatz/statekit"
 )
 
-func TestSamplesFromMapBuildsOneSamplePerEntry(t *testing.T) {
+func TestSamplesFromMapBuildsOneSamplePerEntryPlusTotal(t *testing.T) {
 	published := map[string]uint64{
 		"orders":   3,
 		"payments": 7,
 	}
 
-	got := SamplesFromMap("published_by_table_total", "table", published)
-	sort.Slice(got, func(i, j int) bool {
-		return got[i].Labels["table"] < got[j].Labels["table"]
-	})
+	got := SamplesFromMap("published_by_table", "table", published)
 
-	want := []statekit.PrometheusSample{
-		{Name: "published_by_table_total", Labels: map[string]string{"table": "orders"}, Value: 3},
-		{Name: "published_by_table_total", Labels: map[string]string{"table": "payments"}, Value: 7},
+	var perTable []statekit.PrometheusSample
+	var total *statekit.PrometheusSample
+	for i := range got {
+		s := &got[i]
+		switch s.Name {
+		case "published_by_table":
+			perTable = append(perTable, *s)
+		case "published_by_table_total":
+			total = s
+		default:
+			t.Errorf("unexpected sample name %q", s.Name)
+		}
 	}
-	if len(got) != len(want) {
-		t.Fatalf("len = %d, want %d (%+v)", len(got), len(want), got)
+
+	sort.Slice(perTable, func(i, j int) bool {
+		return perTable[i].Labels["table"] < perTable[j].Labels["table"]
+	})
+	want := []statekit.PrometheusSample{
+		{Name: "published_by_table", Labels: map[string]string{"table": "orders"}, Value: 3},
+		{Name: "published_by_table", Labels: map[string]string{"table": "payments"}, Value: 7},
+	}
+	if len(perTable) != len(want) {
+		t.Fatalf("per-table len = %d, want %d (%+v)", len(perTable), len(want), perTable)
 	}
 	for i := range want {
-		if got[i].Name != want[i].Name {
-			t.Errorf("sample[%d].Name = %q, want %q", i, got[i].Name, want[i].Name)
+		if perTable[i].Value != want[i].Value {
+			t.Errorf("sample[%d].Value = %v, want %v", i, perTable[i].Value, want[i].Value)
 		}
-		if got[i].Value != want[i].Value {
-			t.Errorf("sample[%d].Value = %v, want %v", i, got[i].Value, want[i].Value)
+		if perTable[i].Labels["table"] != want[i].Labels["table"] {
+			t.Errorf("sample[%d].Labels[table] = %q, want %q", i, perTable[i].Labels["table"], want[i].Labels["table"])
 		}
-		if got[i].Labels["table"] != want[i].Labels["table"] {
-			t.Errorf("sample[%d].Labels[table] = %q, want %q", i, got[i].Labels["table"], want[i].Labels["table"])
-		}
+	}
+
+	if total == nil {
+		t.Fatalf("missing total sample, got %+v", got)
+	}
+	if total.Value != 10 {
+		t.Errorf("total.Value = %v, want 10", total.Value)
+	}
+	if len(total.Labels) != 0 {
+		t.Errorf("total.Labels = %+v, want empty", total.Labels)
 	}
 }
 
@@ -47,62 +68,30 @@ func TestSamplesFromMapEmptyReturnsNil(t *testing.T) {
 	}
 }
 
-func TestSamplesFromMapWithTotalAppendsSum(t *testing.T) {
-	published := map[string]uint64{
-		"orders":   3,
-		"payments": 7,
-	}
-
-	got := SamplesFromMapWithTotal("published_by_table", "table", "published_total", published)
-
-	var total *statekit.PrometheusSample
-	perTable := 0
-	for i := range got {
-		s := &got[i]
-		switch s.Name {
-		case "published_total":
-			total = s
-		case "published_by_table":
-			perTable++
-		}
-	}
-	if perTable != 2 {
-		t.Errorf("per-table samples = %d, want 2", perTable)
-	}
-	if total == nil {
-		t.Fatalf("missing total sample, got %+v", got)
-	}
-	if total.Value != 10 {
-		t.Errorf("total.Value = %v, want 10", total.Value)
-	}
-	if len(total.Labels) != 0 {
-		t.Errorf("total.Labels = %+v, want empty", total.Labels)
-	}
-}
-
-func TestSamplesFromMapWithTotalEmitsZeroTotalOnEmpty(t *testing.T) {
-	got := SamplesFromMapWithTotal[uint64]("m", "k", "m_total", nil)
-	if len(got) != 1 || got[0].Name != "m_total" || got[0].Value != 0 {
-		t.Fatalf("empty map: got %+v, want one zero-valued m_total sample", got)
-	}
-}
-
-func TestSamplesFromMapWithTotalOmitsTotalWhenNameEmpty(t *testing.T) {
-	got := SamplesFromMapWithTotal("m", "k", "", map[string]uint64{"a": 1})
-	if len(got) != 1 || got[0].Name != "m" {
-		t.Fatalf("got %+v, want only the per-key sample", got)
-	}
-}
-
 func TestSamplesFromMapAcceptsFloatAndInt(t *testing.T) {
 	intMap := map[string]int{"a": -1, "b": 2}
-	if got := SamplesFromMap("m", "k", intMap); len(got) != 2 {
-		t.Fatalf("int map: len = %d, want 2", len(got))
+	got := SamplesFromMap("m", "k", intMap)
+	if len(got) != 3 {
+		t.Fatalf("int map: len = %d, want 3 (2 per-key + total)", len(got))
+	}
+	var intTotal float64
+	for _, s := range got {
+		if s.Name == "m_total" {
+			intTotal = s.Value
+		}
+	}
+	if intTotal != 1 {
+		t.Errorf("int total = %v, want 1", intTotal)
 	}
 
 	floatMap := map[string]float64{"a": 1.5}
-	got := SamplesFromMap("m", "k", floatMap)
-	if len(got) != 1 || got[0].Value != 1.5 {
-		t.Fatalf("float map: got %+v, want one sample value 1.5", got)
+	got = SamplesFromMap("m", "k", floatMap)
+	if len(got) != 2 {
+		t.Fatalf("float map: len = %d, want 2 (1 per-key + total)", len(got))
+	}
+	for _, s := range got {
+		if s.Name == "m_total" && s.Value != 1.5 {
+			t.Errorf("float total = %v, want 1.5", s.Value)
+		}
 	}
 }
