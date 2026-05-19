@@ -21,8 +21,8 @@ app := statekit.NewStateAggregator("issuer")
 db := statekit.NewManualState("database")
 cache := statekit.NewManualState("cache")
 
-app.AddTest(db)
-app.AddInformationalTest(cache)
+app.AddCheck(db)
+app.AddInformationalCheck(cache)
 reg.Register(app)
 
 requests := statekit.NewCounter("requests_total", "Total requests served.")
@@ -56,7 +56,7 @@ runtimeMetrics := collectors.NewRuntimeMetrics(collectors.WithRecommendedRuntime
 reg.RegisterCollectors(httpMetrics, runtimeMetrics)
 
 httpState := statekit.NewStateAggregator("http")
-httpState.AddTest(
+httpState.AddCheck(
 	collectors.NewHTTPErrorRatioCheck(httpMetrics, "http errors", 20, 0, 0.05, 0),
 	collectors.NewHTTPAverageLatencyCheck(httpMetrics, "http latency", 250*time.Millisecond, 0, 0),
 )
@@ -203,11 +203,11 @@ as checks, so state trees cannot accidentally recurse.
 
 ```go
 app := statekit.NewStateAggregator("issuer")
-app.AddTest(db)
-app.AddInformationalTest(cache)
+app.AddCheck(db)
+app.AddInformationalCheck(cache)
 ```
 
-`AddInformationalTest` caps a child's contribution at `warn` even if the child
+`AddInformationalCheck` caps a child's contribution at `warn` even if the child
 itself reports `fail` or `down`. Use it for optional subsystems whose
 failure should not take the whole component down. The same cap can be
 attached to the state directly:

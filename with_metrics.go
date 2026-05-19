@@ -21,7 +21,7 @@ func (m *WithMetrics) AddMetric(collectors ...PrometheusCollector) {
 	}
 }
 
-func (m *WithMetrics) Metrics() []PrometheusCollectorSnapshot {
+func (m *WithMetrics) metrics() []collectorSnapshot {
 	if m == nil {
 		return nil
 	}
@@ -29,7 +29,7 @@ func (m *WithMetrics) Metrics() []PrometheusCollectorSnapshot {
 	collectors := append([]PrometheusCollector(nil), m.collectors...)
 	m.mu.RUnlock()
 
-	out := make([]PrometheusCollectorSnapshot, 0, len(collectors))
+	out := make([]collectorSnapshot, 0, len(collectors))
 	for _, collector := range collectors {
 		if collector == nil {
 			continue

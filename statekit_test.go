@@ -8,7 +8,17 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"gopkg.in/yaml.v3"
 )
+
+type embeddedManualState struct {
+	ManualState
+}
+
+type embeddedAggregateState struct {
+	AggregateState
+}
 
 func TestManualStateTracksHistory(t *testing.T) {
 	now := time.Date(2026, 5, 15, 12, 0, 0, 0, time.UTC)
@@ -23,14 +33,72 @@ func TestManualStateTracksHistory(t *testing.T) {
 	if snap.Reason != "connection refused" {
 		t.Fatalf("reason = %q", snap.Reason)
 	}
-	if len(snap.History) != 2 {
-		t.Fatalf("history len = %d, want 2", len(snap.History))
+	if len(snap.History) != 1 {
+		t.Fatalf("history len = %d, want 1", len(snap.History))
 	}
-	if snap.History[0].Status != Pass || snap.History[1].Status != Fail {
+	if snap.History[0].Status != Fail {
 		t.Fatalf("history states = %+v", snap.History)
 	}
-	if snap.History[0].SecsAgo != 0 || snap.History[1].SecsAgo != 0 {
+	if snap.History[0].Reason != "connection refused" {
+		t.Fatalf("history reason = %q, want %q", snap.History[0].Reason, "connection refused")
+	}
+	if got := snap.History[0].Data["host"]; got != "db" {
+		t.Fatalf("history data host = %#v, want %q", got, "db")
+	}
+	if snap.History[0].SecsAgo != 0 {
 		t.Fatalf("history secs ago = %+v, want zero at fixed clock", snap.History)
+	}
+}
+
+func TestManualStateHistoryCarriesReasonAndDataPerTransition(t *testing.T) {
+	now := time.Date(2026, 5, 15, 12, 0, 0, 0, time.UTC)
+	s := NewManualState("database", WithClock(func() time.Time { return now }))
+
+	now = now.Add(time.Second)
+	s.Warn("slow", map[string]any{"latency_ms": 120})
+	now = now.Add(time.Second)
+	s.Fail("connection refused", map[string]any{"host": "db"})
+	now = now.Add(time.Second)
+	s.Pass("recovered after retry", map[string]any{"retries": 3})
+
+	snap := s.Snapshot()
+	if len(snap.History) != 3 {
+		t.Fatalf("history len = %d, want 3 transitions", len(snap.History))
+	}
+	want := []struct {
+		status Status
+		reason string
+		data   map[string]any
+	}{
+		{Warn, "slow", map[string]any{"latency_ms": 120}},
+		{Fail, "connection refused", map[string]any{"host": "db"}},
+		{Pass, "recovered after retry", map[string]any{"retries": 3}},
+	}
+	for i, w := range want {
+		got := snap.History[i]
+		if got.Status != w.status || got.Reason != w.reason {
+			t.Fatalf("history[%d] = {status=%v reason=%q}, want {status=%v reason=%q}",
+				i, got.Status, got.Reason, w.status, w.reason)
+		}
+		for k, v := range w.data {
+			if got.Data[k] != v {
+				t.Fatalf("history[%d].data[%q] = %#v, want %#v", i, k, got.Data[k], v)
+			}
+		}
+	}
+}
+
+func TestManualStateInitSupportsEmbedding(t *testing.T) {
+	var embedded embeddedManualState
+	state := embedded.Init("database", WithHelp("Database health."))
+	if state != &embedded.ManualState {
+		t.Fatal("Init returned different manual state")
+	}
+
+	embedded.Warn("slow", nil)
+	snap := embedded.Snapshot()
+	if snap.Name != "database" || snap.Status != Warn || snap.Help != "Database health." {
+		t.Fatalf("embedded manual snapshot = %+v", snap)
 	}
 }
 
@@ -43,24 +111,26 @@ func TestManualStateHistoryReportsSecondsAgo(t *testing.T) {
 	now = now.Add(3 * time.Second)
 	snap := s.Snapshot()
 
-	if len(snap.History) != 2 {
-		t.Fatalf("history len = %d, want 2", len(snap.History))
+	if len(snap.History) != 1 {
+		t.Fatalf("history len = %d, want 1", len(snap.History))
 	}
-	if got := snap.History[0].SecsAgo; got != 5 {
-		t.Fatalf("initial history secs ago = %v, want 5", got)
-	}
-	if got := snap.History[1].SecsAgo; got != 3 {
+	if got := snap.History[0].SecsAgo; got != 3 {
 		t.Fatalf("warn history secs ago = %v, want 3", got)
 	}
 }
 
-func TestManualStateClearsReasonForPass(t *testing.T) {
+func TestManualStatePreservesReasonForPass(t *testing.T) {
 	s := NewManualState("database")
-	s.Pass("connected", nil)
+	s.Warn("slow", nil)
+	s.Pass("recovered", nil)
 
 	snap := s.Snapshot()
-	if snap.Reason != "" {
-		t.Fatalf("pass reason = %q, want empty", snap.Reason)
+	if snap.Reason != "recovered" {
+		t.Fatalf("pass reason = %q, want %q", snap.Reason, "recovered")
+	}
+	last := snap.History[len(snap.History)-1]
+	if last.Status != Pass || last.Reason != "recovered" {
+		t.Fatalf("last history entry = %+v, want pass with reason %q", last, "recovered")
 	}
 }
 
@@ -123,6 +193,26 @@ func TestAggregateStateCanAddChildrenProgressively(t *testing.T) {
 	}
 }
 
+func TestAggregateStateInitSupportsEmbedding(t *testing.T) {
+	var embedded embeddedAggregateState
+	state := embedded.Init("issuer", WithHelp("Issuer aggregate."))
+	if state != &embedded.AggregateState {
+		t.Fatal("Init returned different aggregate state")
+	}
+
+	db := NewManualState("database")
+	db.Fail("connection refused", nil)
+	embedded.AddCheck(db)
+
+	snap := embedded.Snapshot()
+	if snap.Name != "issuer" || snap.Status != Fail || snap.Help != "Issuer aggregate." {
+		t.Fatalf("embedded aggregate snapshot = %+v", snap)
+	}
+	if len(snap.Checks) != 1 || snap.Checks[0].Name != "database" {
+		t.Fatalf("embedded aggregate checks = %+v", snap.Checks)
+	}
+}
+
 func TestAggregateStateCanCapChildContribution(t *testing.T) {
 	root := NewStateAggregator("issuer")
 	upstream := NewManualState("optional-upstream")
@@ -158,16 +248,16 @@ func TestAggregateStateCanUseCustomWorstChildContribution(t *testing.T) {
 	}
 }
 
-func TestAggregateStateAddTestRejectsAggregates(t *testing.T) {
+func TestAggregateStateAddCheckRejectsAggregates(t *testing.T) {
 	root := NewStateAggregator("issuer")
 	child := NewStateAggregator("database-group")
 
 	defer func() {
 		if r := recover(); r == nil {
-			t.Fatal("AddTest accepted aggregate child, want panic")
+			t.Fatal("AddCheck accepted aggregate child, want panic")
 		}
 	}()
-	root.AddTest(child)
+	root.AddCheck(child)
 }
 
 func TestAggregateStateAddRejectsAggregates(t *testing.T) {
@@ -404,7 +494,9 @@ func TestLocalFormattingHelpers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(metricsJSON), `"descriptions"`) || !strings.Contains(string(metricsJSON), `"value": 7`) {
+	if !strings.Contains(string(metricsJSON), `"metrics"`) ||
+		!strings.Contains(string(metricsJSON), `"name": "requests_total"`) ||
+		!strings.Contains(string(metricsJSON), `"value": 7`) {
 		t.Fatalf("collector json = %s", metricsJSON)
 	}
 
@@ -412,7 +504,9 @@ func TestLocalFormattingHelpers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(metricsYAML), "descriptions:") || !strings.Contains(string(metricsYAML), "value: 7") {
+	if strings.Contains(string(metricsYAML), "metrics:") ||
+		!strings.Contains(string(metricsYAML), "# counter - Total requests.") ||
+		!strings.Contains(string(metricsYAML), "requests_total: 7") {
 		t.Fatalf("collector yaml = %s", metricsYAML)
 	}
 
@@ -423,6 +517,112 @@ func TestLocalFormattingHelpers(t *testing.T) {
 	}
 	if !strings.Contains(metricsResponse.Body.String(), `"requests_total"`) {
 		t.Fatalf("metrics handler body = %s", metricsResponse.Body.String())
+	}
+}
+
+func TestMetricsYAMLMapForm(t *testing.T) {
+	counter := NewCounter("requests_total", "Total requests.")
+	counter.Add(7)
+	gv := NewGaugeVec("inflight", "In-flight requests.", "method", "path")
+	gv.WithLabelValues("GET", "/x").Set(2)
+	gv.WithLabelValues("POST", "/y").Set(5)
+
+	state := NewManualState("api")
+	state.Warn("slow", nil)
+	state.AddMetric(counter)
+	state.AddMetric(gv)
+
+	out, err := StateYAML(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(out)
+	for _, want := range []string{
+		"metrics:",
+		"# counter - Total requests.",
+		"requests_total: 7",
+		"# gauge - In-flight requests.",
+		"inflight:",
+		"method=GET,path=/x: 2",
+		"method=POST,path=/y: 5",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("metrics yaml missing %q:\n%s", want, got)
+		}
+	}
+	for _, unwanted := range []string{"samples:", "- name:", "- value:"} {
+		if strings.Contains(got, unwanted) {
+			t.Fatalf("metrics yaml still contains legacy %q:\n%s", unwanted, got)
+		}
+	}
+
+	var roundTrip Snapshot
+	if err := yaml.Unmarshal(out, &roundTrip); err != nil {
+		t.Fatalf("yaml unmarshal: %v", err)
+	}
+	if len(roundTrip.Metrics) != 1 || len(roundTrip.Metrics[0].Metrics) != 2 {
+		t.Fatalf("round-tripped metrics: %+v", roundTrip.Metrics)
+	}
+	byName := map[string]metricSnapshot{}
+	for _, m := range roundTrip.Metrics[0].Metrics {
+		byName[m.Name] = m
+	}
+	if rt := byName["requests_total"]; rt.Type != PrometheusCounter || len(rt.Samples) != 1 || rt.Samples[0].Value != 7 {
+		t.Fatalf("counter round-trip: %+v", rt)
+	}
+	if inflight := byName["inflight"]; inflight.Type != PrometheusGauge || len(inflight.Samples) != 2 {
+		t.Fatalf("gauge round-trip: %+v", inflight)
+	}
+}
+
+func TestMetricsYAMLHistogramShape(t *testing.T) {
+	hist := collectorSnapshot{
+		Metrics: []metricSnapshot{{
+			Name: "request_duration_seconds",
+			Help: "Request duration.",
+			Type: PrometheusHistogram,
+			Samples: []metricSample{
+				{Labels: map[string]string{"le": "0.1"}, Value: 1},
+				{Labels: map[string]string{"le": "0.5"}, Value: 3},
+				{Labels: map[string]string{"le": "+Inf"}, Value: 4},
+				{Value: 4},
+			},
+		}},
+	}
+	out, err := yaml.Marshal(hist)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(out)
+	if strings.Contains(got, "metrics:") {
+		t.Fatalf("standalone histogram yaml should not have metrics wrapper:\n%s", got)
+	}
+	for _, want := range []string{
+		"# histogram - Request duration.",
+		"request_duration_seconds:",
+		"count: 4",
+		"buckets:",
+		"0.1: 1",
+		"+Inf: 4",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("histogram yaml missing %q:\n%s", want, got)
+		}
+	}
+
+	var back collectorSnapshot
+	if err := yaml.Unmarshal(out, &back); err != nil {
+		t.Fatalf("histogram unmarshal: %v", err)
+	}
+	if len(back.Metrics) != 1 {
+		t.Fatalf("decoded metrics len = %d", len(back.Metrics))
+	}
+	m := back.Metrics[0]
+	if m.Type != PrometheusHistogram || m.Name != "request_duration_seconds" {
+		t.Fatalf("decoded metric: %+v", m)
+	}
+	if len(m.Samples) != 4 {
+		t.Fatalf("decoded samples len = %d, want 4", len(m.Samples))
 	}
 }
 
@@ -449,7 +649,7 @@ func TestManualStateAddMetricAddsCollectorSnapshot(t *testing.T) {
 	if len(snap.Metrics) != 1 {
 		t.Fatalf("metrics len = %d, want 1", len(snap.Metrics))
 	}
-	if snap.Metrics[0].Samples[0].Name != "database_latency_ms" || snap.Metrics[0].Samples[0].Value != 42 {
+	if snap.Metrics[0].Metrics[0].Name != "database_latency_ms" || snap.Metrics[0].Metrics[0].Samples[0].Value != 42 {
 		t.Fatalf("metrics = %+v", snap.Metrics)
 	}
 
@@ -472,7 +672,7 @@ func TestAggregateStateAddMetricAddsCollectorSnapshot(t *testing.T) {
 	if len(snap.Metrics) != 1 {
 		t.Fatalf("metrics len = %d, want 1", len(snap.Metrics))
 	}
-	if snap.Metrics[0].Samples[0].Name != "database_latency_ms" || snap.Metrics[0].Samples[0].Value != 42 {
+	if snap.Metrics[0].Metrics[0].Name != "database_latency_ms" || snap.Metrics[0].Metrics[0].Samples[0].Value != 42 {
 		t.Fatalf("metrics = %+v", snap.Metrics)
 	}
 }

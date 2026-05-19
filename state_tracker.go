@@ -30,7 +30,7 @@ func newStateTracker(name string, importance Importance, help string, now clock)
 		status:     Pass,
 		updatedAt:  t,
 		changedAt:  t,
-		history:    []HistoryEntry{{Timestamp: t, Status: Pass}},
+		history:    []HistoryEntry{},
 		maxHistory: defaultMaxHistory,
 		now:        now,
 	}
@@ -39,10 +39,7 @@ func newStateTracker(name string, importance Importance, help string, now clock)
 func (t *stateTracker) set(status Status, reason string, data map[string]any) {
 	now := t.now()
 	t.updatedAt = now
-	if status == Pass {
-		reason = ""
-	}
-	if status == t.status {
+	if status == t.status && len(t.history) > 0 {
 		t.reason = reason
 		t.data = data
 		return
@@ -68,6 +65,7 @@ func (t *stateTracker) snapshot(children []Snapshot) Snapshot {
 	copy(history, t.history)
 	for i := range history {
 		history[i].SecsAgo = int64(now.Sub(history[i].Timestamp).Seconds())
+		history[i].Reason = history[i].Reason + ""
 	}
 	checks := make([]Snapshot, len(children))
 	copy(checks, children)

@@ -173,7 +173,7 @@ type HistoryEntry struct {
 	Timestamp time.Time      `json:"timestamp" yaml:"timestamp"`
 	Status    Status         `json:"status" yaml:"status"`
 	SecsAgo   int64          `json:"secs_ago" yaml:"secs_ago"`
-	Reason    string         `json:"reason,omitempty" yaml:"reason,omitempty"`
+	Reason    string         `json:"reason,omitempty" yaml:"reason"`
 	Data      map[string]any `json:"data,omitempty" yaml:"data,omitempty"`
 }
 
@@ -182,21 +182,21 @@ type HistoryEntry struct {
 // Data carries state-specific fields such as probe metadata, metric values, or
 // scraped labels. It stays nested under "data" in JSON and YAML.
 type Snapshot struct {
-	Name           string                        `json:"name" yaml:"name"`
-	ScrapedFrom    string                        `json:"scraped_from,omitempty" yaml:"scraped_from,omitempty"` // this is scraped data
-	ScrapePath     string                        `json:"scrape_path,omitempty" yaml:"scrape_path,omitempty"`   // this is scraped data
-	Status         Status                        `json:"status" yaml:"status"`
-	Importance     Importance                    `json:"importance" yaml:"importance"`
-	Help           string                        `json:"help,omitempty" yaml:"help,omitempty"`
-	Reason         string                        `json:"reason,omitempty" yaml:"reason,omitempty"`
-	UpdatedAt      time.Time                     `json:"updated_at,omitempty" yaml:"updated_at,omitempty"`
-	UpdatedSecsAgo int64                         `json:"updated_secs_ago,omitempty" yaml:"updated_secs_ago,omitempty"`
-	Data           map[string]any                `json:"data,omitempty" yaml:"data,omitempty"`
-	ChangedAt      time.Time                     `json:"changed_at" yaml:"changed_at"`
-	ChangedSecsAgo int64                         `json:"changed_secs_ago" yaml:"changed_secs_ago"`
-	Metrics        []PrometheusCollectorSnapshot `json:"metrics,omitempty" yaml:"metrics,omitempty"`
-	History        []HistoryEntry                `json:"history,omitempty" yaml:"history,omitempty"`
-	Checks         []Snapshot                    `json:"checks,omitempty" yaml:"checks,omitempty"`
+	Name           string             `json:"name" yaml:"name"`
+	ScrapedFrom    string             `json:"scraped_from,omitempty" yaml:"scraped_from,omitempty"` // this is scraped data
+	ScrapePath     string             `json:"scrape_path,omitempty" yaml:"scrape_path,omitempty"`   // this is scraped data
+	Status         Status             `json:"status" yaml:"status"`
+	Importance     Importance         `json:"importance" yaml:"importance"`
+	Help           string             `json:"help,omitempty" yaml:"help,omitempty"`
+	Reason         string             `json:"reason,omitempty" yaml:"reason,omitempty"`
+	UpdatedAt      time.Time          `json:"updated_at,omitempty" yaml:"updated_at,omitempty"`
+	UpdatedSecsAgo int64              `json:"updated_secs_ago,omitempty" yaml:"updated_secs_ago,omitempty"`
+	Data           map[string]any     `json:"data,omitempty" yaml:"data,omitempty"`
+	ChangedAt      time.Time          `json:"changed_at" yaml:"changed_at"`
+	ChangedSecsAgo int64              `json:"changed_secs_ago" yaml:"changed_secs_ago"`
+	Metrics        collectorSnapshots `json:"metrics,omitempty" yaml:"metrics,omitempty"`
+	History        []HistoryEntry     `json:"history,omitempty" yaml:"history,omitempty"`
+	Checks         []Snapshot         `json:"checks,omitempty" yaml:"checks,omitempty"`
 }
 
 // State is the central interface. Implementations own their concurrency,

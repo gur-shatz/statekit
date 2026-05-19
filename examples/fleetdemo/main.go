@@ -56,8 +56,8 @@ func newFakeComponent(name, region string, port int, degradeCache bool) *fakeCom
 		statekit.WithHelp("Local Redis cache. Failures degrade latency but do not break correctness."))
 	queue := statekit.NewManualState("queue",
 		statekit.WithHelp("Background job queue processor."))
-	app.AddTest(db, queue)
-	app.AddInformationalTest(cache)
+	app.AddCheck(db, queue)
+	app.AddInformationalCheck(cache)
 	_ = reg.Register(app)
 
 	db.Pass("connected", nil)

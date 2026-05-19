@@ -4,14 +4,27 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"sort"
 	"strings"
 
 	"gopkg.in/yaml.v3"
 )
 
-type PrometheusCollectorSnapshot struct {
-	Descriptions []PrometheusDesc   `json:"descriptions" yaml:"descriptions"`
-	Samples      []PrometheusSample `json:"samples" yaml:"samples"`
+type collectorSnapshot struct {
+	Metrics metricList `json:"metrics" yaml:"metrics"`
+}
+
+type metricSnapshot struct {
+	Name    string                   `json:"name" yaml:"name"`
+	Help    string                   `json:"help,omitempty" yaml:"help,omitempty"`
+	Type    PrometheusType           `json:"type,omitempty" yaml:"type,omitempty"`
+	Labels  []string                 `json:"labels,omitempty" yaml:"labels,omitempty"`
+	Samples []metricSample `json:"samples" yaml:"samples"`
+}
+
+type metricSample struct {
+	Labels map[string]string `json:"labels,omitempty" yaml:"labels,omitempty"`
+	Value  float64           `json:"value" yaml:"value"`
 }
 
 type Format string
@@ -87,11 +100,48 @@ func PrometheusCollectorHandlerFunc(collector PrometheusCollector, format string
 	}
 }
 
-func prometheusCollectorSnapshot(collector PrometheusCollector) PrometheusCollectorSnapshot {
-	return PrometheusCollectorSnapshot{
-		Descriptions: collector.DescribePrometheus(),
-		Samples:      collector.CollectPrometheus(),
+func prometheusCollectorSnapshot(collector PrometheusCollector) collectorSnapshot {
+	descs := collector.DescribePrometheus()
+	samples := collector.CollectPrometheus()
+
+	metrics := make([]metricSnapshot, 0, len(descs))
+	metricIndexes := make(map[string]int, len(descs))
+	for _, desc := range descs {
+		if _, exists := metricIndexes[desc.Name]; exists {
+			continue
+		}
+		metricIndexes[desc.Name] = len(metrics)
+		metrics = append(metrics, metricSnapshot{
+			Name:   desc.Name,
+			Help:   desc.Help,
+			Type:   desc.Type,
+			Labels: append([]string(nil), desc.Labels...),
+		})
 	}
+
+	for _, sample := range samples {
+		name := localPrometheusDescName(sample.Name, descs)
+		idx, ok := metricIndexes[name]
+		if !ok {
+			idx = len(metrics)
+			metricIndexes[name] = idx
+			metrics = append(metrics, metricSnapshot{Name: name})
+		}
+		metrics[idx].Samples = append(metrics[idx].Samples, metricSample{
+			Labels: cloneStringMap(sample.Labels),
+			Value:  sample.Value,
+		})
+	}
+
+	sort.Slice(metrics, func(i, j int) bool {
+		return metrics[i].Name < metrics[j].Name
+	})
+	for i := range metrics {
+		sort.Slice(metrics[i].Samples, func(a, b int) bool {
+			return formatLabels(metrics[i].Samples[a].Labels) < formatLabels(metrics[i].Samples[b].Labels)
+		})
+	}
+	return collectorSnapshot{Metrics: metrics}
 }
 
 func formatState(state State, format string) ([]byte, string, error) {
@@ -138,4 +188,30 @@ func writeFormattedValue(w http.ResponseWriter, data []byte, contentType string,
 	}
 	w.Header().Set("Content-Type", contentType)
 	_, _ = w.Write(data)
+}
+
+func localPrometheusDescName(sampleName string, descs []PrometheusDesc) string {
+	for _, desc := range descs {
+		if desc.Type != PrometheusHistogram {
+			continue
+		}
+		if sampleName == desc.Name ||
+			sampleName == desc.Name+"_bucket" ||
+			sampleName == desc.Name+"_sum" ||
+			sampleName == desc.Name+"_count" {
+			return desc.Name
+		}
+	}
+	return sampleName
+}
+
+func cloneStringMap(in map[string]string) map[string]string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
 }

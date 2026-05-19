@@ -10,11 +10,17 @@ type ManualState struct {
 }
 
 func NewManualState(name string, opts ...Option) *ManualState {
+	return new(ManualState).Init(name, opts...)
+}
+
+func (s *ManualState) Init(name string, opts ...Option) *ManualState {
 	o := defaultOptions()
 	for _, opt := range opts {
 		opt(&o)
 	}
-	return &ManualState{tracker: newStateTracker(name, o.importance, o.help, o.now)}
+	s.tracker = newStateTracker(name, o.importance, o.help, o.now)
+	s.WithMetrics = WithMetrics{}
+	return s
 }
 
 func (s *ManualState) Name() string {
@@ -47,6 +53,6 @@ func (s *ManualState) Snapshot() Snapshot {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	snap := s.tracker.snapshot(nil)
-	snap.Metrics = s.Metrics()
+	snap.Metrics = s.metrics()
 	return snap
 }

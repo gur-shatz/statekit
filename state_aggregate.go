@@ -2,16 +2,16 @@ package statekit
 
 import "sync"
 
-// AggregatedState is a state that owns a set of leaf tests/checks.
+// AggregatedState is a state that owns a set of leaf checks.
 //
 // Aggregates intentionally reject other AggregatedState values as children:
 // compose checks into one aggregate layer, then register multiple aggregates at
 // the registry level if the application wants separate groups.
 type AggregatedState interface {
 	State
-	AddTest(...State)
-	AddInformationalTest(...State)
-	AddTestWithWorstStatus(Status, ...State)
+	AddCheck(...State)
+	AddInformationalCheck(...State)
+	AddCheckWithWorstStatus(Status, ...State)
 }
 
 // AggregateState derives its status from child states. Children can be added
@@ -29,11 +29,18 @@ type aggregateChild struct {
 }
 
 func NewStateAggregator(name string, opts ...Option) *AggregateState {
+	return new(AggregateState).Init(name, opts...)
+}
+
+func (s *AggregateState) Init(name string, opts ...Option) *AggregateState {
 	o := defaultOptions()
 	for _, opt := range opts {
 		opt(&o)
 	}
-	return &AggregateState{tracker: newStateTracker(name, o.importance, o.help, o.now)}
+	s.tracker = newStateTracker(name, o.importance, o.help, o.now)
+	s.children = nil
+	s.WithMetrics = WithMetrics{}
+	return s
 }
 
 func (s *AggregateState) Name() string {
@@ -41,27 +48,42 @@ func (s *AggregateState) Name() string {
 }
 
 func (s *AggregateState) Add(children ...State) {
-	s.AddTest(children...)
+	s.AddCheck(children...)
 }
 
-func (s *AggregateState) AddTest(children ...State) {
+func (s *AggregateState) AddCheck(children ...State) {
 	s.addWithWorstStatus(Down, children...)
 }
 
-func (s *AggregateState) AddInformational(children ...State) {
-	s.AddInformationalTest(children...)
+// Deprecated: use AddCheck.
+func (s *AggregateState) AddTest(children ...State) {
+	s.AddCheck(children...)
 }
 
+func (s *AggregateState) AddInformational(children ...State) {
+	s.AddInformationalCheck(children...)
+}
+
+func (s *AggregateState) AddInformationalCheck(children ...State) {
+	s.AddCheckWithWorstStatus(Warn, children...)
+}
+
+// Deprecated: use AddInformationalCheck.
 func (s *AggregateState) AddInformationalTest(children ...State) {
-	s.AddTestWithWorstStatus(Warn, children...)
+	s.AddInformationalCheck(children...)
 }
 
 func (s *AggregateState) AddWithWorstStatus(worstStatus Status, children ...State) {
-	s.AddTestWithWorstStatus(worstStatus, children...)
+	s.AddCheckWithWorstStatus(worstStatus, children...)
 }
 
-func (s *AggregateState) AddTestWithWorstStatus(worstStatus Status, children ...State) {
+func (s *AggregateState) AddCheckWithWorstStatus(worstStatus Status, children ...State) {
 	s.addWithWorstStatus(worstStatus, children...)
+}
+
+// Deprecated: use AddCheckWithWorstStatus.
+func (s *AggregateState) AddTestWithWorstStatus(worstStatus Status, children ...State) {
+	s.AddCheckWithWorstStatus(worstStatus, children...)
 }
 
 func (s *AggregateState) addWithWorstStatus(worstStatus Status, children ...State) {
@@ -79,10 +101,10 @@ func (s *AggregateState) addWithWorstStatus(worstStatus Status, children ...Stat
 func (s *AggregateState) checkAddable(children []State) {
 	for _, child := range children {
 		if child == nil {
-			panic("statekit: AggregateState.AddTest called with nil child")
+			panic("statekit: AggregateState.AddCheck called with nil child")
 		}
 		if isAggregatedState(child) {
-			panic("statekit: AggregateState.AddTest called with aggregate child: we don't allow recursive checks")
+			panic("statekit: AggregateState.AddCheck called with aggregate child: we don't allow recursive checks")
 		}
 	}
 }
@@ -117,7 +139,7 @@ func (s *AggregateState) Snapshot() Snapshot {
 	defer s.mu.Unlock()
 	s.tracker.set(status, reason, nil)
 	snap := s.tracker.snapshot(childSnaps)
-	snap.Metrics = s.Metrics()
+	snap.Metrics = s.metrics()
 	return snap
 }
 
