@@ -9,16 +9,16 @@ const (
 )
 
 type PrometheusDesc struct {
-	Name   string
-	Help   string
-	Type   PrometheusType
-	Labels []string
+	Name   string         `json:"name" yaml:"name"`
+	Help   string         `json:"help,omitempty" yaml:"help,omitempty"`
+	Type   PrometheusType `json:"type" yaml:"type"`
+	Labels []string       `json:"labels,omitempty" yaml:"labels,omitempty"`
 }
 
 type PrometheusSample struct {
-	Name   string
-	Labels map[string]string
-	Value  float64
+	Name   string            `json:"name" yaml:"name"`
+	Labels map[string]string `json:"labels,omitempty" yaml:"labels,omitempty"`
+	Value  float64           `json:"value" yaml:"value"`
 }
 
 // PrometheusCollector is an optional interface for objects that expose factual

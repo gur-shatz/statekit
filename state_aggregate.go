@@ -20,6 +20,7 @@ type AggregateState struct {
 	mu       sync.RWMutex
 	tracker  stateTracker
 	children []aggregateChild
+	WithMetrics
 }
 
 type aggregateChild struct {
@@ -80,13 +81,18 @@ func (s *AggregateState) checkAddable(children []State) {
 		if child == nil {
 			panic("statekit: AggregateState.AddTest called with nil child")
 		}
-		if _, ok := child.(AggregatedState); ok {
+		if isAggregatedState(child) {
 			panic("statekit: AggregateState.AddTest called with aggregate child: we don't allow recursive checks")
 		}
 	}
 }
 
-func (s *AggregateState) Snapshot() Snapshot {	
+func isAggregatedState(state State) bool {
+	_, ok := state.(AggregatedState)
+	return ok
+}
+
+func (s *AggregateState) Snapshot() Snapshot {
 	s.mu.RLock()
 	children := append([]aggregateChild(nil), s.children...)
 	s.mu.RUnlock()
@@ -110,7 +116,9 @@ func (s *AggregateState) Snapshot() Snapshot {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.tracker.set(status, reason, nil)
-	return s.tracker.snapshot(childSnaps)
+	snap := s.tracker.snapshot(childSnaps)
+	snap.Metrics = s.Metrics()
+	return snap
 }
 
 func aggregateContribution(s Snapshot, worstStatus Status) Status {

@@ -4,6 +4,7 @@ package collectors
 
 import (
 	"fmt"
+	"maps"
 	"net/http"
 	"sync"
 	"sync/atomic"
@@ -38,6 +39,7 @@ type HTTPMetrics struct {
 
 type httpObservation struct {
 	at       time.Time
+	path     string
 	status   int
 	duration time.Duration
 }
@@ -63,6 +65,15 @@ type HTTPMetricsSnapshot struct {
 
 	// AverageLatency is the mean request latency for requests observed during Window.
 	AverageLatency time.Duration
+
+	// ResponseCodes counts responses by HTTP status code during Window.
+	ResponseCodes map[int]uint64
+
+	// ErrorURLs counts 5xx responses by request path and status code during Window.
+	ErrorURLs map[string]map[int]uint64
+
+	// UnknownURLs counts 404 responses by request path during Window.
+	UnknownURLs map[string]uint64
 }
 
 // NewHTTPMetrics creates a current-window HTTP metrics collector. The default
@@ -114,7 +125,7 @@ func (m *HTTPMetrics) Middleware(next http.Handler) http.Handler {
 		start := time.Now()
 		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
 		defer func() {
-			m.observe(rec.status, time.Since(start))
+			m.observe(r.URL.Path, rec.status, time.Since(start))
 		}()
 
 		next.ServeHTTP(rec, r)
@@ -166,6 +177,21 @@ func (m *HTTPMetrics) AverageLatency() time.Duration {
 	return m.Snapshot().AverageLatency
 }
 
+// ResponseCodes returns response counts by HTTP status code over the current rolling window.
+func (m *HTTPMetrics) ResponseCodes() map[int]uint64 {
+	return maps.Clone(m.Snapshot().ResponseCodes)
+}
+
+// ErrorURLs returns 5xx response counts by path and status code over the current rolling window.
+func (m *HTTPMetrics) ErrorURLs() map[string]map[int]uint64 {
+	return cloneHTTPStatusDistribution(m.Snapshot().ErrorURLs)
+}
+
+// UnknownURLs returns 404 response counts by path over the current rolling window.
+func (m *HTTPMetrics) UnknownURLs() map[string]uint64 {
+	return maps.Clone(m.Snapshot().UnknownURLs)
+}
+
 // Snapshot returns a coherent copy of the current rolling-window measurements.
 // Repeated calls return a cached snapshot until the snapshot refresh interval
 // has elapsed. The default refresh interval is one second; set it to zero to
@@ -176,16 +202,29 @@ func (m *HTTPMetrics) Snapshot() HTTPMetricsSnapshot {
 	defer m.mu.Unlock()
 
 	if !m.cachedAt.IsZero() && m.snapshotRefresh > 0 && now.Sub(m.cachedAt) < m.snapshotRefresh {
-		return m.cachedSnapshot
+		return cloneHTTPMetricsSnapshot(m.cachedSnapshot)
 	}
 
 	m.pruneLocked(now)
-	snap := HTTPMetricsSnapshot{Window: m.window}
+	snap := HTTPMetricsSnapshot{
+		Window:        m.window,
+		ResponseCodes: map[int]uint64{},
+		ErrorURLs:     map[string]map[int]uint64{},
+		UnknownURLs:   map[string]uint64{},
+	}
 	var durationSum time.Duration
 	for _, obs := range m.observations {
 		snap.Requests++
+		snap.ResponseCodes[obs.status]++
 		if obs.status >= http.StatusInternalServerError {
 			snap.Errors++
+			if snap.ErrorURLs[obs.path] == nil {
+				snap.ErrorURLs[obs.path] = map[int]uint64{}
+			}
+			snap.ErrorURLs[obs.path][obs.status]++
+		}
+		if obs.status == http.StatusNotFound {
+			snap.UnknownURLs[obs.path]++
 		}
 		durationSum += obs.duration
 	}
@@ -199,7 +238,7 @@ func (m *HTTPMetrics) Snapshot() HTTPMetricsSnapshot {
 	}
 	m.cachedAt = now
 	m.cachedSnapshot = snap
-	return snap
+	return cloneHTTPMetricsSnapshot(snap)
 }
 
 // ErrorRatio returns Errors divided by Requests for this snapshot's rolling window.
@@ -243,21 +282,63 @@ func (m *HTTPMetrics) DescribePrometheus() []statekit.PrometheusDesc {
 			Help: fmt.Sprintf("Average HTTP request latency in seconds over the current %s rolling window.", window),
 			Type: statekit.PrometheusGauge,
 		},
+		{
+			Name:   "http_server_response_codes",
+			Help:   fmt.Sprintf("HTTP responses by status code over the current %s rolling window.", window),
+			Type:   statekit.PrometheusGauge,
+			Labels: []string{"code"},
+		},
+		{
+			Name:   "http_server_error_urls",
+			Help:   fmt.Sprintf("HTTP 5xx responses by path and status code over the current %s rolling window.", window),
+			Type:   statekit.PrometheusGauge,
+			Labels: []string{"path", "code"},
+		},
+		{
+			Name:   "http_server_unknown_urls",
+			Help:   fmt.Sprintf("HTTP 404 responses by path over the current %s rolling window.", window),
+			Type:   statekit.PrometheusGauge,
+			Labels: []string{"path"},
+		},
 	}
 }
 
 func (m *HTTPMetrics) CollectPrometheus() []statekit.PrometheusSample {
 	snap := m.Snapshot()
-	return []statekit.PrometheusSample{
+	samples := []statekit.PrometheusSample{
 		{Name: "http_server_requests_total", Value: float64(m.totalRequests.Load())},
 		{Name: "http_server_errors_total", Value: float64(m.totalErrors.Load())},
 		{Name: "http_server_requests_per_second", Value: snap.RequestsPerSecond},
 		{Name: "http_server_errors_per_second", Value: snap.ErrorsPerSecond},
 		{Name: "http_server_average_latency_seconds", Value: snap.AverageLatency.Seconds()},
 	}
+	for code, count := range snap.ResponseCodes {
+		samples = append(samples, statekit.PrometheusSample{
+			Name:   "http_server_response_codes",
+			Labels: map[string]string{"code": fmt.Sprint(code)},
+			Value:  float64(count),
+		})
+	}
+	for path, byStatus := range snap.ErrorURLs {
+		for code, count := range byStatus {
+			samples = append(samples, statekit.PrometheusSample{
+				Name:   "http_server_error_urls",
+				Labels: map[string]string{"path": path, "code": fmt.Sprint(code)},
+				Value:  float64(count),
+			})
+		}
+	}
+	for path, count := range snap.UnknownURLs {
+		samples = append(samples, statekit.PrometheusSample{
+			Name:   "http_server_unknown_urls",
+			Labels: map[string]string{"path": path},
+			Value:  float64(count),
+		})
+	}
+	return samples
 }
 
-func (m *HTTPMetrics) observe(status int, duration time.Duration) {
+func (m *HTTPMetrics) observe(path string, status int, duration time.Duration) {
 	m.totalRequests.Add(1)
 	if status >= http.StatusInternalServerError {
 		m.totalErrors.Add(1)
@@ -267,7 +348,7 @@ func (m *HTTPMetrics) observe(status int, duration time.Duration) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.pruneLocked(now)
-	m.observations = append(m.observations, httpObservation{at: now, status: status, duration: duration})
+	m.observations = append(m.observations, httpObservation{at: now, path: path, status: status, duration: duration})
 }
 
 func (m *HTTPMetrics) pruneLocked(now time.Time) {
@@ -307,4 +388,22 @@ func (r *statusRecorder) Write(p []byte) (int, error) {
 
 func (r *statusRecorder) Unwrap() http.ResponseWriter {
 	return r.ResponseWriter
+}
+
+func cloneHTTPStatusDistribution(in map[string]map[int]uint64) map[string]map[int]uint64 {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]map[int]uint64, len(in))
+	for path, byStatus := range in {
+		out[path] = maps.Clone(byStatus)
+	}
+	return out
+}
+
+func cloneHTTPMetricsSnapshot(s HTTPMetricsSnapshot) HTTPMetricsSnapshot {
+	s.ResponseCodes = maps.Clone(s.ResponseCodes)
+	s.ErrorURLs = cloneHTTPStatusDistribution(s.ErrorURLs)
+	s.UnknownURLs = maps.Clone(s.UnknownURLs)
+	return s
 }

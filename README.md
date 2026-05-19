@@ -77,6 +77,9 @@ http.ListenAndServe(":8080", httpMetrics.Middleware(mux))
 - `httpMetrics.ErrorRatio()`
 - `httpMetrics.ErrorPercentage()`
 - `httpMetrics.AverageLatency()`
+- `httpMetrics.ResponseCodes()`
+- `httpMetrics.ErrorURLs()`
+- `httpMetrics.UnknownURLs()`
 
 These local measurements are evaluated over a rolling window. The default is
 five minutes; override it with `collectors.WithHTTPMetricsWindow`. Viewing a
@@ -99,11 +102,22 @@ The same measurements are exported for Prometheus:
 - `http_server_requests_per_second`
 - `http_server_errors_per_second`
 - `http_server_average_latency_seconds`
+- `http_server_response_codes`
+- `http_server_error_urls`
+- `http_server_unknown_urls`
 
 Factories such as `NewHTTPErrorRatioCheck`, `NewHTTPErrorCountCheck`,
 `NewHTTPAverageLatencyCheck`, `NewHTTPRequestsPerSecondCheck`, and
 `NewHTTPErrorsPerSecondCheck` return regular state objects, so they can be
 inspected directly or added to an aggregate state.
+
+Local snapshots and collectors can also be rendered directly without building a
+registry:
+
+```go
+stateJSON, _ := statekit.SnapshotJSON(httpState)
+metricsYAML, _ := statekit.PrometheusCollectorYAML(httpMetrics)
+```
 
 `RuntimeMetrics` exports Go's `runtime/metrics` values as Prometheus samples
 with a `go_runtime_` prefix. By default it exports every non-bad runtime metric
@@ -281,6 +295,32 @@ hosts := NewQuorumState("upstreams", 3, 1)
 reg.Register(hosts)
 
 hosts.Mark("us-east-1", false)
+```
+
+Attach related metrics to built-in state reports with `AddMetric`:
+
+```go
+dbLatency := statekit.NewGauge("database_latency_ms", "Current database latency.")
+db.AddMetric(dbLatency)
+reg.Register(db)
+```
+
+The state snapshot keeps metrics in a separate `metrics` field, not in `data`.
+
+### Histogram utilities
+
+`Histogram` is a small local utility for keyed distributions and exact
+percentiles:
+
+```go
+h := statekit.NewHistogram()
+h.Add("200", 42)
+h.Add("404", 3)
+
+snap := h.Snapshot()
+top := snap.Top(5)
+covered := snap.TopPercent(95)
+p90 := h.Percentile(90)
 ```
 
 ### Display format

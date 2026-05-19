@@ -6,6 +6,7 @@ import "sync"
 type ManualState struct {
 	mu      sync.RWMutex
 	tracker stateTracker
+	WithMetrics
 }
 
 func NewManualState(name string, opts ...Option) *ManualState {
@@ -45,5 +46,7 @@ func (s *ManualState) Down(reason string, data map[string]any) {
 func (s *ManualState) Snapshot() Snapshot {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.tracker.snapshot(nil)
+	snap := s.tracker.snapshot(nil)
+	snap.Metrics = s.Metrics()
+	return snap
 }

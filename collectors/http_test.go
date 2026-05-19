@@ -47,6 +47,43 @@ func TestHTTPMetricsExposeLocalMeasurements(t *testing.T) {
 	}
 }
 
+func TestHTTPMetricsExposeCurrentDistributions(t *testing.T) {
+	metrics := NewHTTPMetrics(WithHTTPMetricsSnapshotRefresh(0))
+	handler := metrics.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/fail":
+			http.Error(w, "boom", http.StatusInternalServerError)
+		case "/bad-gateway":
+			http.Error(w, "upstream", http.StatusBadGateway)
+		case "/missing":
+			http.NotFound(w, r)
+		default:
+			w.WriteHeader(http.StatusNoContent)
+		}
+	}))
+
+	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/ok", nil))
+	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/fail", nil))
+	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/bad-gateway", nil))
+	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/missing", nil))
+
+	if got := metrics.ResponseCodes()[http.StatusNoContent]; got != 1 {
+		t.Fatalf("204 responses = %d, want 1", got)
+	}
+	if got := metrics.ResponseCodes()[http.StatusInternalServerError]; got != 1 {
+		t.Fatalf("500 responses = %d, want 1", got)
+	}
+	if got := metrics.ErrorURLs()["/fail"][http.StatusInternalServerError]; got != 1 {
+		t.Fatalf("/fail 500 errors = %d, want 1", got)
+	}
+	if got := metrics.ErrorURLs()["/bad-gateway"][http.StatusBadGateway]; got != 1 {
+		t.Fatalf("/bad-gateway 502 errors = %d, want 1", got)
+	}
+	if got := metrics.UnknownURLs()["/missing"]; got != 1 {
+		t.Fatalf("/missing unknown URLs = %d, want 1", got)
+	}
+}
+
 func TestHTTPMetricsPrometheusExportsGlobalMeasurements(t *testing.T) {
 	reg := statekit.NewRegistry()
 	metrics := NewHTTPMetrics()
@@ -54,10 +91,15 @@ func TestHTTPMetricsPrometheusExportsGlobalMeasurements(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	handler := metrics.Middleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	handler := metrics.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/missing" {
+			http.NotFound(w, r)
+			return
+		}
 		http.Error(w, "boom", http.StatusInternalServerError)
 	}))
 	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/fail", nil))
+	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/missing", nil))
 
 	var out bytes.Buffer
 	if err := reg.Prometheus(&out); err != nil {
@@ -73,8 +115,18 @@ func TestHTTPMetricsPrometheusExportsGlobalMeasurements(t *testing.T) {
 		"# TYPE http_server_errors_per_second gauge",
 		"# HELP http_server_average_latency_seconds Average HTTP request latency in seconds over the current 5m0s rolling window.",
 		"# TYPE http_server_average_latency_seconds gauge",
-		"http_server_requests_total 1",
+		"# HELP http_server_response_codes HTTP responses by status code over the current 5m0s rolling window.",
+		"# TYPE http_server_response_codes gauge",
+		"# HELP http_server_error_urls HTTP 5xx responses by path and status code over the current 5m0s rolling window.",
+		"# TYPE http_server_error_urls gauge",
+		"# HELP http_server_unknown_urls HTTP 404 responses by path over the current 5m0s rolling window.",
+		"# TYPE http_server_unknown_urls gauge",
+		"http_server_requests_total 2",
 		"http_server_errors_total 1",
+		`http_server_response_codes{code="404"} 1`,
+		`http_server_response_codes{code="500"} 1`,
+		`http_server_error_urls{code="500",path="/fail"} 1`,
+		`http_server_unknown_urls{path="/missing"} 1`,
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("prometheus output missing %q:\n%s", want, text)

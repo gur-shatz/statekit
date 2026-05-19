@@ -354,6 +354,129 @@ func TestRegistryStateDisplayHandlers(t *testing.T) {
 	}
 }
 
+func TestLocalFormattingHelpers(t *testing.T) {
+	state := NewManualState("database")
+	state.Warn("slow", map[string]any{"latency_ms": 42})
+
+	stateJSON, err := StateJSON(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(stateJSON), `"status": "warn"`) || !strings.Contains(string(stateJSON), `"data"`) {
+		t.Fatalf("snapshot json = %s", stateJSON)
+	}
+
+	stateYAML, err := StateYAML(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(stateYAML), "status: warn") || !strings.Contains(string(stateYAML), "data:") {
+		t.Fatalf("snapshot yaml = %s", stateYAML)
+	}
+	stateYaml, err := StateYaml(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(stateYaml) != string(stateYAML) {
+		t.Fatalf("StateYaml differs from StateYAML:\n%s\n%s", stateYaml, stateYAML)
+	}
+	snapshotJSON, err := SnapshotJSON(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(snapshotJSON) != string(stateJSON) {
+		t.Fatalf("SnapshotJSON differs from StateJSON:\n%s\n%s", snapshotJSON, stateJSON)
+	}
+
+	stateResponse := httptest.NewRecorder()
+	StateHandlerFunc(state, "yaml")(stateResponse, httptest.NewRequest(http.MethodGet, "/state", nil))
+	if got := stateResponse.Header().Get("Content-Type"); got != "text/yaml; charset=utf-8" {
+		t.Fatalf("state handler content type = %q", got)
+	}
+	if !strings.Contains(stateResponse.Body.String(), "status: warn") {
+		t.Fatalf("state handler body = %s", stateResponse.Body.String())
+	}
+
+	counter := NewCounter("requests_total", "Total requests.")
+	counter.Add(7)
+
+	metricsJSON, err := PrometheusCollectorJSON(counter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(metricsJSON), `"descriptions"`) || !strings.Contains(string(metricsJSON), `"value": 7`) {
+		t.Fatalf("collector json = %s", metricsJSON)
+	}
+
+	metricsYAML, err := PrometheusCollectorYAML(counter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(metricsYAML), "descriptions:") || !strings.Contains(string(metricsYAML), "value: 7") {
+		t.Fatalf("collector yaml = %s", metricsYAML)
+	}
+
+	metricsResponse := httptest.NewRecorder()
+	PrometheusCollectorHandlerFunc(counter, "json")(metricsResponse, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	if got := metricsResponse.Header().Get("Content-Type"); got != "application/json; charset=utf-8" {
+		t.Fatalf("metrics handler content type = %q", got)
+	}
+	if !strings.Contains(metricsResponse.Body.String(), `"requests_total"`) {
+		t.Fatalf("metrics handler body = %s", metricsResponse.Body.String())
+	}
+}
+
+func TestLocalFormattingHandlersRejectBadFormat(t *testing.T) {
+	state := NewManualState("database")
+	response := httptest.NewRecorder()
+	StateHandlerFunc(state, "toml")(response, httptest.NewRequest(http.MethodGet, "/state", nil))
+	if response.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", response.Code)
+	}
+}
+
+func TestManualStateAddMetricAddsCollectorSnapshot(t *testing.T) {
+	state := NewManualState("database")
+	state.Warn("slow", nil)
+	gauge := NewGauge("database_latency_ms", "Current database latency.")
+	gauge.Set(42)
+	state.AddMetric(gauge)
+
+	snap := state.Snapshot()
+	if snap.Name != "database" || snap.Status != Warn {
+		t.Fatalf("snapshot = %+v", snap)
+	}
+	if len(snap.Metrics) != 1 {
+		t.Fatalf("metrics len = %d, want 1", len(snap.Metrics))
+	}
+	if snap.Metrics[0].Samples[0].Name != "database_latency_ms" || snap.Metrics[0].Samples[0].Value != 42 {
+		t.Fatalf("metrics = %+v", snap.Metrics)
+	}
+
+	out, err := SnapshotJSON(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(out), `"metrics"`) || !strings.Contains(string(out), `"database_latency_ms"`) {
+		t.Fatalf("snapshot json missing metrics: %s", out)
+	}
+}
+
+func TestAggregateStateAddMetricAddsCollectorSnapshot(t *testing.T) {
+	state := NewStateAggregator("database")
+	gauge := NewGauge("database_latency_ms", "Current database latency.")
+	gauge.Set(42)
+	state.AddMetric(gauge)
+
+	snap := state.Snapshot()
+	if len(snap.Metrics) != 1 {
+		t.Fatalf("metrics len = %d, want 1", len(snap.Metrics))
+	}
+	if snap.Metrics[0].Samples[0].Name != "database_latency_ms" || snap.Metrics[0].Samples[0].Value != 42 {
+		t.Fatalf("metrics = %+v", snap.Metrics)
+	}
+}
+
 func TestRegistryMountIsolatesInstancesByPrefix(t *testing.T) {
 	mux := http.NewServeMux()
 
