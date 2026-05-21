@@ -6,6 +6,7 @@ const (
 	PrometheusGauge     PrometheusType = "gauge"
 	PrometheusCounter   PrometheusType = "counter"
 	PrometheusHistogram PrometheusType = "histogram"
+	PrometheusSummary   PrometheusType = "summary"
 )
 
 type PrometheusDesc struct {

@@ -128,7 +128,7 @@ func writePrometheusSamples(w io.Writer, labels map[string]string, samples []Pro
 		for k, v := range sample.Labels {
 			merged[k] = v
 		}
-		if _, err := fmt.Fprintf(w, "%s%s %g\n", sample.Name, formatLabels(merged), sample.Value); err != nil {
+		if _, err := fmt.Fprintf(w, "%s%s %.4g\n", sample.Name, formatLabels(merged), sample.Value); err != nil {
 			return err
 		}
 	}

@@ -294,12 +294,12 @@ func formatYAMLFloat(v float64) string {
 	case math.IsInf(v, -1):
 		return "-.inf"
 	}
-	return strconv.FormatFloat(v, 'g', -1, 64)
+	return strconv.FormatFloat(v, 'g', 4, 64)
 }
 
 func isKnownPrometheusType(s string) bool {
 	switch PrometheusType(s) {
-	case PrometheusCounter, PrometheusGauge, PrometheusHistogram:
+	case PrometheusCounter, PrometheusGauge, PrometheusHistogram, PrometheusSummary:
 		return true
 	}
 	return false
