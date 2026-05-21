@@ -336,17 +336,20 @@ func TestAggregationRollsUpRemoteStatesFlatly(t *testing.T) {
 		t.Fatal(err)
 	}
 	snaps := reg.Snapshot()
-	if len(snaps) != 2 {
-		t.Fatalf("registry snapshots = %d, want 2 flat remote states: %+v", len(snaps), snaps)
+	if len(snaps) != 3 {
+		t.Fatalf("registry snapshots = %d, want health + 2 flat remote states: %+v", len(snaps), snaps)
 	}
-	if snaps[0].Name != "checkout-east" || snaps[1].Name != "billing-east" {
-		t.Fatalf("snapshot names = %q, %q", snaps[0].Name, snaps[1].Name)
+	if snaps[0].Name != "health" {
+		t.Fatalf("first state = %q, want health", snaps[0].Name)
 	}
-	if snaps[0].ScrapedFrom != "regional-east" || snaps[0].ScrapePath != "regional-east" {
-		t.Fatalf("scrape metadata = %q %q", snaps[0].ScrapedFrom, snaps[0].ScrapePath)
+	if snaps[1].Name != "checkout-east" || snaps[2].Name != "billing-east" {
+		t.Fatalf("snapshot names = %q, %q", snaps[1].Name, snaps[2].Name)
 	}
-	if len(snaps[0].Checks) != 1 || snaps[0].Checks[0].Name != "database" {
-		t.Fatalf("leaf-owned checks were not preserved: %+v", snaps[0].Checks)
+	if snaps[1].ScrapedFrom != "regional-east" || snaps[1].ScrapePath != "regional-east" {
+		t.Fatalf("scrape metadata = %q %q", snaps[1].ScrapedFrom, snaps[1].ScrapePath)
+	}
+	if len(snaps[1].Checks) != 1 || snaps[1].Checks[0].Name != "database" {
+		t.Fatalf("leaf-owned checks were not preserved: %+v", snaps[1].Checks)
 	}
 }
 

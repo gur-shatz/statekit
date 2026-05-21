@@ -391,8 +391,17 @@ func TestRegistryStateDisplayDocumentUsesLabelPath(t *testing.T) {
 	if doc.LabelPath[1] != (StateDisplayLabel{Name: "component", Value: "issuer"}) {
 		t.Fatalf("second label = %+v", doc.LabelPath[1])
 	}
-	if len(doc.States) != 1 || doc.States[0].Status != Fail {
-		t.Fatalf("states = %+v", doc.States)
+	if len(doc.States) != 2 {
+		t.Fatalf("states len = %d, want 2 (health + database)", len(doc.States))
+	}
+	if doc.States[0].Name != "health" || doc.States[0].Status != Fail {
+		t.Fatalf("first state = %+v, want health/fail", doc.States[0])
+	}
+	if doc.States[0].Reason != "fail:database" {
+		t.Fatalf("health reason = %q, want %q", doc.States[0].Reason, "fail:database")
+	}
+	if doc.States[1].Name != "database" || doc.States[1].Status != Fail {
+		t.Fatalf("second state = %+v, want database/fail", doc.States[1])
 	}
 }
 
@@ -924,5 +933,135 @@ func TestFailRatioThresholdPolicyAndWindow(t *testing.T) {
 	}
 	if rs := fr.RatioSnapshot(); rs.Total != 0 {
 		t.Fatalf("expired window total = %d, want 0", rs.Total)
+	}
+}
+
+func TestFailMapTracksFailingItems(t *testing.T) {
+	now := time.Date(2026, 5, 15, 12, 0, 0, 0, time.UTC)
+	fm := NewFailMap("collection", WithClock(func() time.Time { return now }))
+
+	if snap := fm.Snapshot(); snap.Status != Pass {
+		t.Fatalf("empty map status = %v, want pass", snap.Status)
+	}
+
+	fm.Fail("row-1", "checksum mismatch", map[string]any{"hash": "abc"})
+	firstFailAt := now
+	now = now.Add(30 * time.Second)
+	fm.Fail("row-2", "missing field", nil)
+
+	snap := fm.Snapshot()
+	if snap.Status != Fail {
+		t.Fatalf("two failures status = %v, want fail", snap.Status)
+	}
+	if snap.Reason != "2 failing" {
+		t.Fatalf("reason = %q, want %q", snap.Reason, "2 failing")
+	}
+	if count, _ := snap.Data["count"].(int); count != 2 {
+		t.Fatalf("data count = %v, want 2", snap.Data["count"])
+	}
+	items, _ := snap.Data["items"].(map[string]any)
+	if items == nil || items["row-1"] == nil || items["row-2"] == nil {
+		t.Fatalf("data items = %#v, want both rows present", snap.Data["items"])
+	}
+
+	now = now.Add(time.Minute)
+	fm.Fail("row-1", "still bad", nil)
+	snap = fm.Snapshot()
+	items, _ = snap.Data["items"].(map[string]any)
+	row1, _ := items["row-1"].(map[string]any)
+	if since, _ := row1["since"].(time.Time); !since.Equal(firstFailAt) {
+		t.Fatalf("row-1 since = %v, want preserved %v", since, firstFailAt)
+	}
+	if secs, _ := row1["secs_in_failure"].(int64); secs != 90 {
+		t.Fatalf("row-1 secs_in_failure = %d, want 90", secs)
+	}
+
+	fm.Pass("row-1")
+	if snap := fm.Snapshot(); snap.Status != Fail {
+		t.Fatalf("one remaining failure status = %v, want fail", snap.Status)
+	}
+
+	fm.Pass("row-2")
+	snap = fm.Snapshot()
+	if snap.Status != Pass {
+		t.Fatalf("cleared status = %v, want pass", snap.Status)
+	}
+	if snap.Reason != "" {
+		t.Fatalf("cleared reason = %q, want empty", snap.Reason)
+	}
+	if snap.Data != nil {
+		t.Fatalf("cleared data = %#v, want nil", snap.Data)
+	}
+}
+
+func TestRegistryVersionOnStateDisplay(t *testing.T) {
+	reg := NewRegistry(WithVersion("1.2.3"))
+	doc := reg.StateDisplay()
+	if doc.Version != "1.2.3" {
+		t.Fatalf("doc version = %q, want %q", doc.Version, "1.2.3")
+	}
+
+	plain := NewRegistry()
+	if got := plain.StateDisplay().Version; got != "" {
+		t.Fatalf("default version = %q, want empty", got)
+	}
+}
+
+func TestRegistryHealthIsWorstOfAllAndDisplayedFirst(t *testing.T) {
+	reg := NewRegistry()
+
+	passing := NewManualState("alpha")
+	warning := NewManualState("zulu")
+	warning.Warn("slow", nil)
+	failing := NewManualState("delta")
+	failing.Fail("boom", nil)
+	informational := NewManualState("optional", WithImportance(Informational))
+	informational.Down("offline", nil)
+
+	for _, s := range []State{passing, warning, failing, informational} {
+		if err := reg.Register(s); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	snaps := reg.Snapshot()
+	if len(snaps) != 5 {
+		t.Fatalf("snapshots len = %d, want 5 (health + 4 registered)", len(snaps))
+	}
+	health := snaps[0]
+	if health.Name != "health" {
+		t.Fatalf("first state = %q, want health", health.Name)
+	}
+	if health.Status != Fail {
+		t.Fatalf("health status = %v, want fail (informational down capped at warn, delta is fail)", health.Status)
+	}
+	if got := health.Reason; got != "fail:delta warn:optional,zulu" {
+		t.Fatalf("health reason = %q, want %q", got, "fail:delta warn:optional,zulu")
+	}
+	if got, _ := health.Data["pass"].(int); got != 1 {
+		t.Fatalf("pass count = %v, want 1", health.Data["pass"])
+	}
+	if got, _ := health.Data["warn"].(int); got != 2 {
+		t.Fatalf("warn count = %v, want 2 (zulu + capped optional)", health.Data["warn"])
+	}
+	if got, _ := health.Data["fail"].(int); got != 1 {
+		t.Fatalf("fail count = %v, want 1", health.Data["fail"])
+	}
+	if _, present := health.Data["down"]; present {
+		t.Fatalf("down key should be omitted when count is 0, got %v", health.Data["down"])
+	}
+}
+
+func TestRegistryHealthAllPassEmptyReason(t *testing.T) {
+	reg := NewRegistry()
+	if err := reg.Register(NewManualState("alpha")); err != nil {
+		t.Fatal(err)
+	}
+	snap := reg.Snapshot()[0]
+	if snap.Status != Pass {
+		t.Fatalf("health status = %v, want pass", snap.Status)
+	}
+	if snap.Reason != "" {
+		t.Fatalf("health reason = %q, want empty", snap.Reason)
 	}
 }

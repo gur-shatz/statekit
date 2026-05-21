@@ -182,8 +182,8 @@ Every state reports one of four statuses, in ascending severity:
 
 ### Built-in states
 
-`statekit` ships three built-in implementations: `ManualState`,
-`AggregateState`, and `FailRatio`.
+`statekit` ships four built-in implementations: `ManualState`,
+`AggregateState`, `FailRatio`, and `FailMap`.
 
 #### Manual state
 
@@ -234,6 +234,30 @@ upstream.Fail()
 
 `statekit.AllFailed(minSamples, status)` provides a policy that only fires
 when every observed outcome in the window failed.
+
+#### Fail map
+
+Tracks named failures by name. Items reported failing stay in the map until
+they are reported ok. The state is `pass` while the map is empty and `fail`
+while any item is in it. Useful when walking a collection and you want the
+snapshot to say both that something is wrong and exactly which items:
+
+```go
+shards := statekit.NewFailMap("shards")
+
+for _, shard := range collection {
+    if err := shard.Verify(); err != nil {
+        shards.Fail(shard.ID, err.Error(), map[string]any{"offset": shard.Offset})
+    } else {
+        shards.Pass(shard.ID)
+    }
+}
+```
+
+The reason carries the count of failing items. The data carries the map of
+items with each entry's since-time and `secs_in_failure`, so the snapshot
+shows how long each item has been bad. Repeated `Fail` calls on the same
+name preserve the original since-time.
 
 ### Custom states
 
@@ -326,17 +350,32 @@ p90 := h.Percentile(90)
 ### Display format
 
 `/state` (served as YAML) wraps the current state tree in a stable
-document that includes the registry's label hierarchy. A fleet-wide
-visualizer can merge many component documents by `label_path`.
+document that includes the registry's label hierarchy and an optional
+build version (`statekit.WithVersion(...)`). A fleet-wide visualizer
+can merge many component documents by `label_path`.
+
+Every registry also maintains a synthetic `health` state. It is always
+the first state in the document, with status equal to the worst of all
+registered states (Informational children capped at warn), data carrying
+the count distribution per status, and reason grouping the non-pass
+states like `fail:db,xx warn:zzz`.
 
 ```yaml
 kind: statekit.state.v1
+version: 1.4.2
 label_path:
   - name: service
     value: checkout
   - name: example
     value: componentdemo
 states:
+  - name: health
+    status: warn
+    importance: important
+    reason: "warn:checkout-api"
+    data:
+      pass: 1
+      warn: 1
   - name: checkout-api
     status: warn
     importance: important

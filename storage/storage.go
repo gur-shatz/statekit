@@ -142,14 +142,16 @@ type EventFilter struct {
 }
 
 type MemoryStore struct {
-	mu       sync.RWMutex
-	nodes    map[string]StateNode
-	current  map[string]CurrentObservation
-	events   map[string]StateEvent
-	order    []string
-	targets  map[string]TargetDocument
-	docCache DocumentCache[statekit.StateDisplayDocument]
-	docTTL   time.Duration
+	mu                 sync.RWMutex
+	nodes              map[string]StateNode
+	current            map[string]CurrentObservation
+	events             map[string]StateEvent
+	order              []string
+	targets            map[string]TargetDocument
+	docScopeIdentities map[string]map[string]struct{}
+	docScopeTargets    map[string]map[string]struct{}
+	docCache           DocumentCache[statekit.StateDisplayDocument]
+	docTTL             time.Duration
 }
 
 type MemoryStoreOption func(*MemoryStore)
@@ -163,10 +165,12 @@ func WithDocumentCache(cache DocumentCache[statekit.StateDisplayDocument], ttl t
 
 func NewMemoryStore(opts ...MemoryStoreOption) *MemoryStore {
 	store := &MemoryStore{
-		nodes:   map[string]StateNode{},
-		current: map[string]CurrentObservation{},
-		events:  map[string]StateEvent{},
-		targets: map[string]TargetDocument{},
+		nodes:              map[string]StateNode{},
+		current:            map[string]CurrentObservation{},
+		events:             map[string]StateEvent{},
+		targets:            map[string]TargetDocument{},
+		docScopeIdentities: map[string]map[string]struct{}{},
+		docScopeTargets:    map[string]map[string]struct{}{},
 	}
 	for _, opt := range opts {
 		opt(store)
@@ -183,9 +187,34 @@ func (s *MemoryStore) IngestDocument(ctx context.Context, doc statekit.StateDisp
 	}
 	entries := flattenDocument(doc, observedAt)
 	targets := buildTargetDocuments(entries)
+	docKey := StateDisplayDocumentKey(doc)
+
+	newIdentities := make(map[string]struct{}, len(entries))
+	for _, entry := range entries {
+		newIdentities[entry.Node.Identity] = struct{}{}
+	}
+	newTargets := make(map[string]struct{}, len(targets))
+	for _, target := range targets {
+		newTargets[target.Key] = struct{}{}
+	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	for identity := range s.docScopeIdentities[docKey] {
+		if _, kept := newIdentities[identity]; kept {
+			continue
+		}
+		delete(s.nodes, identity)
+		delete(s.current, identity)
+	}
+	for key := range s.docScopeTargets[docKey] {
+		if _, kept := newTargets[key]; kept {
+			continue
+		}
+		delete(s.targets, key)
+	}
+
 	for _, entry := range entries {
 		if existing, ok := s.nodes[entry.Node.Identity]; ok {
 			entry.Node.FirstSeenAt = existing.FirstSeenAt
@@ -200,6 +229,8 @@ func (s *MemoryStore) IngestDocument(ctx context.Context, doc statekit.StateDisp
 	for _, target := range targets {
 		s.targets[target.Key] = target
 	}
+	s.docScopeIdentities[docKey] = newIdentities
+	s.docScopeTargets[docKey] = newTargets
 	return nil
 }
 

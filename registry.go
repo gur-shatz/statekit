@@ -8,11 +8,13 @@ import (
 
 type Registry struct {
 	mu         sync.RWMutex
+	version    string
 	labels     map[string]string
 	labelOrder []string
 	states     []State
 	collectors []PrometheusCollector
 	descs      map[string]PrometheusDesc
+	health     *healthState
 }
 
 type RegistryOption func(*Registry)
@@ -26,6 +28,15 @@ func WithLabel(name, value string) RegistryOption {
 	}
 }
 
+// WithVersion attaches a version string to the registry. It surfaces as the
+// top-level "version" field on the state display document so scrapers can
+// see which build produced the report.
+func WithVersion(version string) RegistryOption {
+	return func(r *Registry) {
+		r.version = version
+	}
+}
+
 func NewRegistry(opts ...RegistryOption) *Registry {
 	r := &Registry{
 		labels: map[string]string{},
@@ -34,6 +45,7 @@ func NewRegistry(opts ...RegistryOption) *Registry {
 	for _, opt := range opts {
 		opt(r)
 	}
+	r.health = newHealthState("health", defaultClock)
 	r.rememberDesc(PrometheusDesc{
 		Name: "state_level",
 		Help: "Current state level: pass=1, warn=2, fail=3, down=4.",
@@ -81,7 +93,7 @@ func (r *Registry) Snapshot() []Snapshot {
 	states := append([]State(nil), r.states...)
 	r.mu.RUnlock()
 
-	snaps := make([]Snapshot, 0, len(states))
+	snaps := make([]Snapshot, 0, len(states)+1)
 	for _, state := range states {
 		if collection, ok := state.(StateCollection); ok {
 			snaps = append(snaps, collection.Snapshots()...)
@@ -89,7 +101,15 @@ func (r *Registry) Snapshot() []Snapshot {
 		}
 		snaps = append(snaps, state.Snapshot())
 	}
-	return snaps
+	healthSnap := r.health.update(snaps)
+	return append([]Snapshot{healthSnap}, snaps...)
+}
+
+// Version returns the version configured via WithVersion. Empty if none was set.
+func (r *Registry) Version() string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.version
 }
 
 func (r *Registry) rememberDesc(desc PrometheusDesc) error {

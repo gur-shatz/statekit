@@ -12,6 +12,7 @@ const StateDisplayKind = "statekit.state.v1"
 
 type StateDisplayDocument struct {
 	Kind      string              `json:"kind" yaml:"kind"`
+	Version   string              `json:"version,omitempty" yaml:"version,omitempty"`
 	LabelPath []StateDisplayLabel `json:"label_path" yaml:"label_path"`
 	States    []Snapshot          `json:"states" yaml:"states"`
 }
@@ -24,6 +25,7 @@ type StateDisplayLabel struct {
 func (r *Registry) StateDisplay() StateDisplayDocument {
 	return StateDisplayDocument{
 		Kind:      StateDisplayKind,
+		Version:   r.Version(),
 		LabelPath: r.stateDisplayLabelPath(),
 		States:    r.Snapshot(),
 	}

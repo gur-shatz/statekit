@@ -67,6 +67,98 @@ func TestMemoryStoreIngestsCurrentLabelsAndGroups(t *testing.T) {
 	}
 }
 
+func TestMemoryStorePrunesVanishedStatesAndTargets(t *testing.T) {
+	store := NewMemoryStore()
+	ctx := context.Background()
+	t0 := time.Date(2026, 5, 16, 12, 0, 0, 0, time.UTC)
+
+	if err := store.IngestDocument(ctx, testDocument(), t0); err != nil {
+		t.Fatal(err)
+	}
+	before, err := store.Current(ctx, CurrentFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(before) != 2 {
+		t.Fatalf("initial current len = %d, want 2", len(before))
+	}
+	beforeTargets, err := store.Targets(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(beforeTargets) != 1 {
+		t.Fatalf("initial targets len = %d, want 1", len(beforeTargets))
+	}
+
+	empty := statekit.StateDisplayDocument{
+		Kind:      statekit.StateDisplayKind,
+		LabelPath: testDocument().LabelPath,
+	}
+	if err := store.IngestDocument(ctx, empty, t0.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+
+	after, err := store.Current(ctx, CurrentFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after) != 0 {
+		t.Fatalf("current after empty ingest = %d, want 0 (states vanished): %+v", len(after), after)
+	}
+	afterTargets, err := store.Targets(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(afterTargets) != 0 {
+		t.Fatalf("targets after empty ingest = %d, want 0: %+v", len(afterTargets), afterTargets)
+	}
+
+	events, err := store.Events(ctx, EventFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 2 {
+		t.Fatalf("events after vanishing = %d, want 2 (history retained)", len(events))
+	}
+}
+
+func TestMemoryStoreScopesPruneToDocumentKey(t *testing.T) {
+	store := NewMemoryStore()
+	ctx := context.Background()
+	t0 := time.Date(2026, 5, 16, 12, 0, 0, 0, time.UTC)
+
+	docA := testDocument()
+	docB := testDocument()
+	docB.LabelPath = []statekit.StateDisplayLabel{{Name: "service", Value: "billing"}}
+	docB.States[0].Name = "billing-api"
+	docB.States[0].Checks[0].Name = "billing-db"
+
+	if err := store.IngestDocument(ctx, docA, t0); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.IngestDocument(ctx, docB, t0); err != nil {
+		t.Fatal(err)
+	}
+
+	emptyA := statekit.StateDisplayDocument{Kind: statekit.StateDisplayKind, LabelPath: docA.LabelPath}
+	if err := store.IngestDocument(ctx, emptyA, t0.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+
+	current, err := store.Current(ctx, CurrentFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(current) != 2 {
+		t.Fatalf("current len = %d, want 2 (only docA pruned, docB intact)", len(current))
+	}
+	for _, item := range current {
+		if item.Labels["service"] != "billing" {
+			t.Fatalf("survived state from wrong scope: %+v", item.Labels)
+		}
+	}
+}
+
 func TestMemoryStoreEventsAreDedupedByTransition(t *testing.T) {
 	store := NewMemoryStore()
 	doc := testDocument()
