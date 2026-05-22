@@ -69,7 +69,8 @@ func buildMetrics(target TargetConfig, cfg Config, client *http.Client, collecto
 	timeout := resolveTimeout(target.Metrics.Timeout, target.Timeout, cfg.Defaults.Timeout)
 	paths := append([]string(nil), target.Metrics.Paths...)
 
-	name := fmt.Sprintf("%s.metrics", targetIdentifier(target))
+	source := targetIdentifier(target)
+	name := fmt.Sprintf("%s.metrics", source)
 
 	tick := func(ctx context.Context) {
 		var allSamples []statekit.PrometheusSample
@@ -83,9 +84,14 @@ func buildMetrics(target TargetConfig, cfg Config, client *http.Client, collecto
 				if samples[i].Labels == nil {
 					samples[i].Labels = map[string]string{}
 				}
+				scrapedFrom := samples[i].Labels["scraped_from"]
 				for k, v := range labels {
 					samples[i].Labels[k] = v
 				}
+				if scrapedFrom == "" {
+					scrapedFrom = source
+				}
+				samples[i].Labels["scraped_from"] = scrapedFrom
 			}
 			allSamples = append(allSamples, samples...)
 			allDescs = append(allDescs, descs...)

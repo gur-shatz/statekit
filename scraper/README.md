@@ -54,7 +54,9 @@ targets:
 ```
 
 Both `target_id` (from `id`) and `group_name` (from `group_name`) are
-emitted as labels on every state and metric the target produces.
+emitted as labels on every state and metric the target produces. Scraped
+metrics also receive `scraped_from`, using the target identifier unless
+the sample already carries an upstream `scraped_from`.
 
 ## Task types
 
@@ -201,10 +203,12 @@ levels overriding on key conflict:
 scraper.labels → target.labels → task.labels
 ```
 
-After merging, the scraper appends two structural labels:
+After merging, the scraper appends structural labels:
 
 - `target_id` from the target's `id`
 - `group_name` from the target's `group_name`
+- `scraped_from` on scraped metrics, preserving an existing non-empty
+  upstream value
 
 ## Expiration
 
