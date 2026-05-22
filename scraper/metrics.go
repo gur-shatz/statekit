@@ -89,6 +89,9 @@ func buildMetrics(target TargetConfig, cfg Config, client *http.Client, collecto
 					samples[i].Labels[k] = v
 				}
 				if scrapedFrom == "" {
+					scrapedFrom = samples[i].Labels["scraped_from"]
+				}
+				if scrapedFrom == "" {
 					scrapedFrom = source
 				}
 				samples[i].Labels["scraped_from"] = scrapedFrom

@@ -58,7 +58,7 @@ upstream_metric{scraped_from="origin-service",kind="remote"} 2
 	}
 }
 
-func TestMetricsScrapeStructuralScrapedFromOverridesConfigLabel(t *testing.T) {
+func TestMetricsScrapePreservesConfiguredScrapedFromLabel(t *testing.T) {
 	target := TargetConfig{
 		ID:      "issuer-prod-use1",
 		Name:    "issuer",
@@ -84,7 +84,7 @@ func TestMetricsScrapeStructuralScrapedFromOverridesConfigLabel(t *testing.T) {
 	if len(samples) != 1 {
 		t.Fatalf("samples len = %d, want 1: %+v", len(samples), samples)
 	}
-	if got := samples[0].Labels["scraped_from"]; got != "issuer-prod-use1" {
-		t.Fatalf("scraped_from = %q, want target identifier; labels = %+v", got, samples[0].Labels)
+	if got := samples[0].Labels["scraped_from"]; got != "task-label" {
+		t.Fatalf("scraped_from = %q, want configured label; labels = %+v", got, samples[0].Labels)
 	}
 }
