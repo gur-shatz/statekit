@@ -149,6 +149,14 @@ func stateSamples(s Snapshot) []PrometheusSample {
 		"state":      s.Name,
 		"importance": s.Importance.String(),
 	}
+	// Scraped states carry a provenance tag in Snapshot. Surfacing it here
+	// disambiguates two states that happen to share the same name — for
+	// example, a local synthetic "health" and a "health" mirrored in from a
+	// remote target via state_aggregation. Without this, both would emit
+	// identical Prometheus rows (a protocol violation).
+	if s.ScrapedFrom != "" {
+		labels["scraped_from"] = s.ScrapedFrom
+	}
 	samples := []PrometheusSample{
 		{Name: "state_level", Labels: labels, Value: prometheusStatusValue(s.Status)},
 		{Name: "state_time_in_state_seconds", Labels: labels, Value: float64(s.ChangedSecsAgo)},

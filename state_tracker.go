@@ -61,8 +61,12 @@ func (t *stateTracker) set(status Status, reason string, data map[string]any) {
 
 func (t *stateTracker) snapshot(children []Snapshot) Snapshot {
 	now := t.now()
+	// History is exposed most-recent-first so a reader's eye lands on
+	// "what's happening now" before scrolling into older transitions.
 	history := make([]HistoryEntry, len(t.history))
-	copy(history, t.history)
+	for i, entry := range t.history {
+		history[len(t.history)-1-i] = entry
+	}
 	for i := range history {
 		history[i].SecsAgo = int64(now.Sub(history[i].Timestamp).Seconds())
 		history[i].Reason = history[i].Reason + ""

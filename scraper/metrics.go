@@ -68,6 +68,11 @@ func buildMetrics(target TargetConfig, cfg Config, client *http.Client, collecto
 	interval := resolveInterval(target.Metrics.Interval, target.Interval, cfg.Defaults.Interval)
 	timeout := resolveTimeout(target.Metrics.Timeout, target.Timeout, cfg.Defaults.Timeout)
 	paths := append([]string(nil), target.Metrics.Paths...)
+	// When state_aggregation is also configured, the local registry will emit
+	// state_level / state_time_in_state_seconds for the mirrored states. Importing
+	// the same metric names from the remote /metrics would create label-divergent
+	// duplicates of the same logical sample, so we skip them on the scrape side.
+	dropStateMetrics := target.StateAggregation != nil
 
 	source := targetIdentifier(target)
 	name := fmt.Sprintf("%s.metrics", source)
@@ -79,6 +84,10 @@ func buildMetrics(target TargetConfig, cfg Config, client *http.Client, collecto
 			descs, samples, err := scrapeMetricsPath(ctx, client, resolveURL(target.BaseURL, p), timeout)
 			if err != nil {
 				continue
+			}
+			if dropStateMetrics {
+				samples = filterStateMetrics(samples)
+				descs = filterStateMetricDescs(descs)
 			}
 			for i := range samples {
 				if samples[i].Labels == nil {
@@ -103,6 +112,36 @@ func buildMetrics(target TargetConfig, cfg Config, client *http.Client, collecto
 	}
 
 	return &taskRunner{name: name, interval: interval, tick: tick}
+}
+
+// stateMetricNames are the statekit-emitted metrics that already come through
+// the state_aggregation path. When both tasks are active for a target, the
+// metrics scrape filters these out to avoid emitting the same sample twice.
+var stateMetricNames = map[string]bool{
+	"state_level":                 true,
+	"state_time_in_state_seconds": true,
+}
+
+func filterStateMetrics(in []statekit.PrometheusSample) []statekit.PrometheusSample {
+	out := in[:0]
+	for _, s := range in {
+		if stateMetricNames[s.Name] {
+			continue
+		}
+		out = append(out, s)
+	}
+	return out
+}
+
+func filterStateMetricDescs(in []statekit.PrometheusDesc) []statekit.PrometheusDesc {
+	out := in[:0]
+	for _, d := range in {
+		if stateMetricNames[d.Name] {
+			continue
+		}
+		out = append(out, d)
+	}
+	return out
 }
 
 func scrapeMetricsPath(ctx context.Context, client *http.Client, url string, timeout time.Duration) ([]statekit.PrometheusDesc, []statekit.PrometheusSample, error) {

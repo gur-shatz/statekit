@@ -45,9 +45,25 @@ func (r *Registry) StateDisplayYAMLHandler() http.Handler {
 	})
 }
 
+// defaultHistoryLimit caps history entries in the default display format.
+// History is exposed most-recent-first by the tracker, so the top N is the
+// freshest N. Use ?format=verbose to see the full retained chain.
+const defaultHistoryLimit = 4
+
+// ApplyDisplayFormat applies the named format ("", "verbose", "short") to a
+// StateDisplayDocument. Callers assembling a filtered document (e.g. a
+// per-target view in a fleet aggregator) use this to keep the same
+// history-limit semantics as the registry's built-in /state handler.
+func ApplyDisplayFormat(doc StateDisplayDocument, format string) (StateDisplayDocument, error) {
+	return displayDocumentWithFormat(doc, format)
+}
+
 func displayDocumentWithFormat(doc StateDisplayDocument, format string) (StateDisplayDocument, error) {
 	switch format {
-	case "", "verbose":
+	case "":
+		doc.States = snapshotsWithHistoryLimit(doc.States, defaultHistoryLimit)
+		return doc, nil
+	case "verbose":
 		return doc, nil
 	case "short":
 		doc.States = snapshotsWithoutHistory(doc.States)
@@ -62,6 +78,21 @@ func snapshotsWithoutHistory(in []Snapshot) []Snapshot {
 	for i, snap := range in {
 		snap.History = nil
 		snap.Checks = snapshotsWithoutHistory(snap.Checks)
+		out[i] = snap
+	}
+	return out
+}
+
+// snapshotsWithHistoryLimit keeps at most limit entries from the start of
+// each Snapshot's History. The tracker emits history newest-first, so the
+// prefix is the most recent N.
+func snapshotsWithHistoryLimit(in []Snapshot, limit int) []Snapshot {
+	out := make([]Snapshot, len(in))
+	for i, snap := range in {
+		if len(snap.History) > limit {
+			snap.History = append([]HistoryEntry(nil), snap.History[:limit]...)
+		}
+		snap.Checks = snapshotsWithHistoryLimit(snap.Checks, limit)
 		out[i] = snap
 	}
 	return out

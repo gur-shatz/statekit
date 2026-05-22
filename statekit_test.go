@@ -65,14 +65,15 @@ func TestManualStateHistoryCarriesReasonAndDataPerTransition(t *testing.T) {
 	if len(snap.History) != 3 {
 		t.Fatalf("history len = %d, want 3 transitions", len(snap.History))
 	}
+	// History is exposed most-recent-first.
 	want := []struct {
 		status Status
 		reason string
 		data   map[string]any
 	}{
-		{Warn, "slow", map[string]any{"latency_ms": 120}},
-		{Fail, "connection refused", map[string]any{"host": "db"}},
 		{Pass, "recovered after retry", map[string]any{"retries": 3}},
+		{Fail, "connection refused", map[string]any{"host": "db"}},
+		{Warn, "slow", map[string]any{"latency_ms": 120}},
 	}
 	for i, w := range want {
 		got := snap.History[i]
@@ -128,9 +129,10 @@ func TestManualStatePreservesReasonForPass(t *testing.T) {
 	if snap.Reason != "recovered" {
 		t.Fatalf("pass reason = %q, want %q", snap.Reason, "recovered")
 	}
-	last := snap.History[len(snap.History)-1]
-	if last.Status != Pass || last.Reason != "recovered" {
-		t.Fatalf("last history entry = %+v, want pass with reason %q", last, "recovered")
+	// Most recent is at the head.
+	mostRecent := snap.History[0]
+	if mostRecent.Status != Pass || mostRecent.Reason != "recovered" {
+		t.Fatalf("most-recent history entry = %+v, want pass with reason %q", mostRecent, "recovered")
 	}
 }
 

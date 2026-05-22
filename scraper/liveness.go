@@ -66,8 +66,17 @@ func (this *livenessState) Snapshot() statekit.Snapshot {
 	snap.UpdatedSecsAgo = int64(time.Since(this.updatedAt).Seconds())
 	this.mu.Unlock()
 	if this.scrapedFrom != "" {
-		snap.ScrapedFrom = this.scrapedFrom
-		snap.ScrapePath = this.scrapedFrom
+		// First producer wins for ScrapedFrom; chain prepends for ScrapePath.
+		// Matches annotateScrape's contract so multi-hop liveness chains are
+		// honoured the same way as state_aggregation chains.
+		if snap.ScrapedFrom == "" {
+			snap.ScrapedFrom = this.scrapedFrom
+		}
+		if snap.ScrapePath == "" {
+			snap.ScrapePath = this.scrapedFrom
+		} else {
+			snap.ScrapePath = this.scrapedFrom + " > " + snap.ScrapePath
+		}
 	}
 	return snap
 }

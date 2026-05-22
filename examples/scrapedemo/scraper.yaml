@@ -20,7 +20,7 @@ targets:
       service: issuer
       env: demo
     liveness:
-      - id: up
+      - id: responsive
         path: /
         importance: important
         expect_status: [200]
