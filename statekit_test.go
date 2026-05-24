@@ -1054,6 +1054,50 @@ func TestRegistryHealthIsWorstOfAllAndDisplayedFirst(t *testing.T) {
 	}
 }
 
+func TestRegistryHealthDataMergesExternalData(t *testing.T) {
+	reg := NewRegistry()
+	reg.SetHealthData("version", "1.4.2")
+
+	// All-pass produces no computed counts, so the data map would otherwise be
+	// nil. External data must still surface.
+	if err := reg.Register(NewManualState("alpha")); err != nil {
+		t.Fatal(err)
+	}
+	health := reg.Snapshot()[0]
+	if got, _ := health.Data["version"].(string); got != "1.4.2" {
+		t.Fatalf("version = %v, want 1.4.2", health.Data["version"])
+	}
+
+	// External data is read fresh on every update, so a later change is picked up.
+	reg.SetHealthData("version", "1.5.0")
+	failing := NewManualState("delta")
+	failing.Fail("boom", nil)
+	if err := reg.Register(failing); err != nil {
+		t.Fatal(err)
+	}
+	health = reg.Snapshot()[0]
+	if got, _ := health.Data["version"].(string); got != "1.5.0" {
+		t.Fatalf("version = %v, want 1.5.0", health.Data["version"])
+	}
+	if got, _ := health.Data["fail"].(int); got != 1 {
+		t.Fatalf("fail count = %v, want 1 (computed counts still present)", health.Data["fail"])
+	}
+}
+
+func TestRegistryHealthDataExternalOverridesComputedCounts(t *testing.T) {
+	reg := NewRegistry()
+	reg.SetHealthData("fail", "see incident-123")
+	failing := NewManualState("delta")
+	failing.Fail("boom", nil)
+	if err := reg.Register(failing); err != nil {
+		t.Fatal(err)
+	}
+	health := reg.Snapshot()[0]
+	if got, _ := health.Data["fail"].(string); got != "see incident-123" {
+		t.Fatalf("fail = %v, want external value to win over computed count", health.Data["fail"])
+	}
+}
+
 func TestRegistryHealthAllPassEmptyReason(t *testing.T) {
 	reg := NewRegistry()
 	if err := reg.Register(NewManualState("alpha")); err != nil {

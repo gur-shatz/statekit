@@ -2,6 +2,7 @@ package statekit
 
 import (
 	"fmt"
+	"maps"
 	"sort"
 	"strings"
 	"sync"
@@ -18,6 +19,9 @@ import (
 type healthState struct {
 	mu      sync.Mutex
 	tracker stateTracker
+	// extra holds key/value pairs supplied from outside (for example version
+	// information) that are merged into the data map on every update.
+	extra map[string]any
 }
 
 func newHealthState(name string, now clock) *healthState {
@@ -39,10 +43,29 @@ func (this *healthState) Snapshot() Snapshot {
 	return this.tracker.snapshot(nil)
 }
 
+// setData records an external key/value pair that is merged into the health
+// state's data map on every update. External values take precedence over the
+// computed status counts (pass/warn/fail/down) when keys collide.
+func (this *healthState) setData(key string, value any) {
+	this.mu.Lock()
+	defer this.mu.Unlock()
+	if this.extra == nil {
+		this.extra = map[string]any{}
+	}
+	this.extra[key] = value
+}
+
 func (this *healthState) update(snaps []Snapshot) Snapshot {
 	this.mu.Lock()
 	defer this.mu.Unlock()
 	status, reason, data := evaluateHealth(snaps)
+	if len(this.extra) > 0 {
+		if data == nil {
+			data = map[string]any{}
+		}
+		// External data is merged last so it overrides the computed counts.
+		maps.Copy(data, this.extra)
+	}
 	this.tracker.set(status, reason, data)
 	return this.tracker.snapshot(nil)
 }

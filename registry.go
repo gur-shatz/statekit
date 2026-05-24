@@ -105,6 +105,15 @@ func (r *Registry) Snapshot() []Snapshot {
 	return append([]Snapshot{healthSnap}, snaps...)
 }
 
+// SetHealthData records an external key/value pair that is merged into the
+// synthetic "health" state's data map on every Snapshot. It is useful for
+// surfacing process-wide facts (for example build/version information)
+// alongside the health rollup. External values override the computed status
+// counts (pass/warn/fail/down) when keys collide.
+func (r *Registry) SetHealthData(key string, value any) {
+	r.health.setData(key, value)
+}
+
 // Version returns the version configured via WithVersion. Empty if none was set.
 func (r *Registry) Version() string {
 	r.mu.RLock()
