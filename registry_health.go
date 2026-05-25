@@ -29,7 +29,7 @@ func newHealthState(name string, now clock) *healthState {
 		now = defaultClock
 	}
 	return &healthState{
-		tracker: newStateTracker(name, Important, "Most severe status across registered states.", now),
+		tracker: newStateTracker(name, Important, "aggregation of the local states", now),
 	}
 }
 
