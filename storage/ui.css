@@ -167,6 +167,39 @@ button:hover { border-color: #1f6feb; }
 .stateLabels {
   margin-top: 8px;
 }
+.dataBlock {
+  margin-top: 8px;
+  border-top: 1px dashed #e3e8ef;
+  padding-top: 8px;
+}
+.dataTitle {
+  color: #647082;
+  font-size: 11px;
+  font-weight: 720;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: 5px;
+}
+.dataGrid {
+  display: grid;
+  gap: 3px 12px;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+}
+.dataPair {
+  display: flex;
+  gap: 6px;
+  min-width: 0;
+  align-items: baseline;
+  font-size: 12px;
+}
+.dataKey { color: #647082; flex: 0 1 auto; }
+.dataVal {
+  color: #1f2937;
+  font-weight: 620;
+  font-variant-numeric: tabular-nums;
+  flex: 1 1 auto;
+  text-align: right;
+}
 .cardMeta {
   display: flex;
   flex-wrap: wrap;

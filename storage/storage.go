@@ -92,6 +92,7 @@ type TargetState struct {
 	Help       string            `json:"help,omitempty"`
 	GroupName  string            `json:"group_name,omitempty"`
 	Labels     map[string]string `json:"labels,omitempty"`
+	Data       map[string]any    `json:"data,omitempty"`
 	ChangedAt  time.Time         `json:"changed_at"`
 	UpdatedAt  time.Time         `json:"updated_at,omitempty"`
 	ObservedAt time.Time         `json:"observed_at"`

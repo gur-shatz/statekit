@@ -205,6 +205,9 @@ func TestMemoryStoreBuildsTargetDocuments(t *testing.T) {
 	if len(target.States) != 1 || target.States[0].Name != "checkout-api" {
 		t.Fatalf("states = %+v", target.States)
 	}
+	if target.States[0].Data["latency_ms"] != 482 {
+		t.Fatalf("state data = %+v", target.States[0].Data)
+	}
 	if len(target.States[0].Checks) != 1 || target.States[0].Checks[0].Name != "database" {
 		t.Fatalf("checks = %+v", target.States[0].Checks)
 	}
@@ -370,6 +373,7 @@ func testDocument() statekit.StateDisplayDocument {
 			ChangedAt:      changedAt,
 			ChangedSecsAgo: 60,
 			Data: map[string]any{
+				"latency_ms": 482,
 				"labels": map[string]any{
 					"group_name": "payments",
 					"region":     "us-east-1",

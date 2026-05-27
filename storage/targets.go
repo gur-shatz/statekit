@@ -130,6 +130,7 @@ func targetStateFromEntry(entry flattenedState) TargetState {
 		Help:       entry.Node.Help,
 		GroupName:  entry.Node.GroupName,
 		Labels:     cloneLabels(entry.Node.Labels),
+		Data:       cloneData(entry.Current.Data),
 		ChangedAt:  entry.Current.ChangedAt,
 		UpdatedAt:  entry.Current.UpdatedAt,
 		ObservedAt: entry.Current.ObservedAt,
@@ -190,6 +191,7 @@ func targetMaterialHash(target TargetDocument) string {
 			"help":       state.Help,
 			"group_name": state.GroupName,
 			"labels":     state.Labels,
+			"data":       state.Data,
 			"changed_at": state.ChangedAt,
 			"checks":     checks,
 		})

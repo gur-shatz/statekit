@@ -133,6 +133,7 @@ function normalizeServerState(item) {
       changed_at: item.changed_at || "",
       changed_secs_ago: secondsSince(item.changed_at),
       observed_at: item.observed_at || "",
+      data: item.data || {},
     },
     checks: (item.checks || []).map(normalizeServerCheck),
   };
@@ -265,6 +266,7 @@ function stateCard(target, item) {
   const checks = checksForState(target, item).slice().sort(compareStates);
   const reason = obs.reason ? `<div class="reason truncate">${esc(obs.reason)}</div>` : "";
   const labels = stateLabels(item);
+  const data = stateData(item);
   return `<article class="stateCard">
     <div class="stateCardTop">
       <span class="pill ${esc(obs.status)}">${esc(obs.status)}</span>
@@ -275,6 +277,7 @@ function stateCard(target, item) {
     </div>
     ${reason}
     ${labels ? `<div class="labels stateLabels">${labels}</div>` : ""}
+    ${data ? `<div class="dataBlock"><div class="dataTitle">data</div><div class="dataGrid">${data}</div></div>` : ""}
     <div class="cardMeta">
       <span>changed ${esc(formatAge(obs.changed_secs_ago))} ago</span>
       <span>observed ${esc(formatTime(obs.observed_at))}</span>
@@ -302,6 +305,24 @@ function stateLabels(item) {
     .sort(([a], [b]) => a.localeCompare(b))
     .map(([k, v]) => `<span class="label truncate">${esc(k)}=${esc(v)}</span>`)
     .join("");
+}
+
+function stateData(item) {
+  const data = item.observation?.data || {};
+  return Object.entries(data)
+    .filter(([k, v]) => k !== "labels" && v !== null && v !== undefined && v !== "")
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([k, v]) => {
+      const value = formatDataValue(v);
+      return `<div class="dataPair"><span class="dataKey truncate">${esc(k)}</span><span class="dataVal truncate" title="${esc(value)}">${esc(value)}</span></div>`;
+    })
+    .join("");
+}
+
+function formatDataValue(value) {
+  if (value === null || value === undefined) return "";
+  if (typeof value === "object") return JSON.stringify(value);
+  return String(value);
 }
 
 function checkRow(item) {
