@@ -5,6 +5,7 @@ Runs a three-layer statekit fleet in one process:
 - leaf components with manual state controls
 - regional scrapers loaded from YAML config files
 - a fleet aggregator loaded from YAML config, with storage API
+- support escalation capture from leaves into central incident storage
 
 Start it:
 
@@ -39,6 +40,7 @@ Useful endpoints:
 /api/state/groups?by=group_name
 /api/state/groups?by=label:region
 /api/state/events?limit=20
+/api/escalations/incidents
 /api/openapi.yaml
 /storage/                     storage console
 /-/quit                       stop the process when -kill-url is enabled
@@ -55,3 +57,8 @@ examples/stackdemo/config/fleet-aggregator.yaml
 Change a leaf state in the UI, wait a few seconds, then refresh the
 fleet state or storage API views to see the change propagate through
 both scraper layers.
+
+To try escalations, open a leaf component and use **Create Escalation**.
+The leaf serves it at `/leaf/<component>/escalations`; the regional
+scraper collects and acknowledges it using the same endpoint with
+`?ack=<watermark>`, then stores it under `/api/escalations/incidents`.

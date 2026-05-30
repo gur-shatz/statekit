@@ -44,6 +44,7 @@
         <a href="/">stack</a>
         <a href="{{.Prefix}}/state">state</a>
         <a href="{{.Prefix}}/metrics">metrics</a>
+        <a href="{{.Prefix}}/escalations">escalations</a>
       </nav>
     </header>
 
@@ -94,6 +95,34 @@
           </label>
           <button type="submit">Update</button>
         </form>
+      </section>
+
+      <section class="panel">
+        <h2>Support Escalation</h2>
+        <form method="post" action="{{.Prefix}}/escalate">
+          <label>Title
+            <input name="title" value="contact support for {{.Name}}">
+          </label>
+          <div class="row">
+            <label>Severity
+              <select name="severity">
+                <option value="fail">fail</option>
+                <option value="warn">warn</option>
+                <option value="down">down</option>
+              </select>
+            </label>
+            <label>Topic
+              <input name="topic" value="support">
+            </label>
+            <label>Message
+              <input name="message" value="demo support context captured">
+            </label>
+          </div>
+          <button type="submit">Create Escalation</button>
+        </form>
+        {{if .LastEscalationID}}
+        <p class="muted">Last support ID: {{.LastEscalationID}}</p>
+        {{end}}
       </section>
     </div>
   </main>

@@ -44,6 +44,7 @@ type TargetConfig struct {
 	Liveness         []LivenessTask        `yaml:"liveness,omitempty"`
 	StateAggregation *StateAggregationTask `yaml:"state_aggregation,omitempty"`
 	Metrics          *MetricsTask          `yaml:"metrics,omitempty"`
+	Escalations      *EscalationsTask      `yaml:"escalations,omitempty"`
 }
 
 // LivenessTask probes a URL and reports status based on HTTP expectations.
@@ -191,6 +192,15 @@ type StateAggregationTask struct {
 // re-emits the samples under the scraper's registry.
 type MetricsTask struct {
 	Paths    []string          `yaml:"paths"`
+	Labels   map[string]string `yaml:"labels,omitempty"`
+	Interval Duration          `yaml:"interval,omitempty"`
+	Timeout  Duration          `yaml:"timeout,omitempty"`
+}
+
+// EscalationsTask scrapes support escalation incidents from one path. The same
+// endpoint is used for acknowledgements with ?ack=<watermark>.
+type EscalationsTask struct {
+	Path     string            `yaml:"path"`
 	Labels   map[string]string `yaml:"labels,omitempty"`
 	Interval Duration          `yaml:"interval,omitempty"`
 	Timeout  Duration          `yaml:"timeout,omitempty"`

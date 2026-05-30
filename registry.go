@@ -7,14 +7,15 @@ import (
 )
 
 type Registry struct {
-	mu         sync.RWMutex
-	version    string
-	labels     map[string]string
-	labelOrder []string
-	states     []State
-	collectors []PrometheusCollector
-	descs      map[string]PrometheusDesc
-	health     *healthState
+	mu          sync.RWMutex
+	version     string
+	labels      map[string]string
+	labelOrder  []string
+	states      []State
+	collectors  []PrometheusCollector
+	descs       map[string]PrometheusDesc
+	health      *healthState
+	escalations EscalationSource
 }
 
 type RegistryOption func(*Registry)

@@ -25,6 +25,9 @@ targets:
       - name: Storage groups
         description: Storage API grouped by group_name
         url: "http://localhost:{{ .PORT }}/api/state/groups?by=group_name"
+      - name: Incidents
+        description: Stored support escalations
+        url: "http://localhost:{{ .PORT }}/api/escalations/incidents"
       - name: Kill URL
         description: Shutdown endpoint
         url: "http://localhost:{{ .PORT }}/-/quit"

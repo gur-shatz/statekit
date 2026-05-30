@@ -52,6 +52,9 @@ type leafComponent struct {
 
 	requests   *statekit.Counter
 	queueDepth *statekit.Gauge
+
+	escalations      *statekit.Escalations
+	lastEscalationID string
 }
 
 func newLeaf(name, group, region, prefix string) *leafComponent {
@@ -75,28 +78,34 @@ func newLeaf(name, group, region, prefix string) *leafComponent {
 
 	requests := statekit.NewCounter(strings.ReplaceAll(name, "-", "_")+"_requests_total", "Total demo requests.")
 	queueDepth := statekit.NewGauge(strings.ReplaceAll(name, "-", "_")+"_queue_depth", "Current queue depth.")
+	escalations := statekit.NewEscalations(statekit.WithEscalationPolicy(statekit.EscalationPolicy{
+		MaxUnacknowledged: 10,
+		TTL:               10 * time.Minute,
+	}))
 	requests.Add(uint64(100 + len(name)))
 	queueDepth.Set(3)
 
 	_ = reg.Register(app)
 	_ = reg.RegisterCollectors(requests, queueDepth)
+	reg.RegisterEscalations(escalations)
 
 	database.Pass("connected", nil)
 	cache.Pass("warm", nil)
 	queue.Pass("idle", nil)
 
 	return &leafComponent{
-		name:       name,
-		group:      group,
-		region:     region,
-		prefix:     prefix,
-		reg:        reg,
-		app:        app,
-		database:   database,
-		cache:      cache,
-		queue:      queue,
-		requests:   requests,
-		queueDepth: queueDepth,
+		name:        name,
+		group:       group,
+		region:      region,
+		prefix:      prefix,
+		reg:         reg,
+		app:         app,
+		database:    database,
+		cache:       cache,
+		queue:       queue,
+		requests:    requests,
+		queueDepth:  queueDepth,
+		escalations: escalations,
 	}
 }
 
@@ -106,6 +115,7 @@ func (c *leafComponent) mount(mux *http.ServeMux) {
 	mux.HandleFunc("GET "+c.prefix+"/{$}", c.handlePage)
 	mux.HandleFunc("POST "+c.prefix+"/set", c.handleSet)
 	mux.HandleFunc("POST "+c.prefix+"/metric", c.handleMetric)
+	mux.HandleFunc("POST "+c.prefix+"/escalate", c.handleEscalate)
 }
 
 func (c *leafComponent) redirectRoot(w http.ResponseWriter, r *http.Request) {
@@ -115,17 +125,62 @@ func (c *leafComponent) redirectRoot(w http.ResponseWriter, r *http.Request) {
 func (c *leafComponent) handlePage(w http.ResponseWriter, _ *http.Request) {
 	c.mu.RLock()
 	view := leafView{
-		Name:       c.name,
-		Group:      c.group,
-		Region:     c.region,
-		Prefix:     c.prefix,
-		Snapshot:   c.app.Snapshot(),
-		QueueDepth: c.queueDepth.Get(),
+		Name:             c.name,
+		Group:            c.group,
+		Region:           c.region,
+		Prefix:           c.prefix,
+		Snapshot:         c.app.Snapshot(),
+		QueueDepth:       c.queueDepth.Get(),
+		LastEscalationID: c.lastEscalationID,
 	}
 	c.mu.RUnlock()
 	if err := pageTemplate.Execute(w, view); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}
+}
+
+func (c *leafComponent) handleEscalate(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	title := strings.TrimSpace(r.FormValue("title"))
+	if title == "" {
+		title = "support escalation from " + c.name
+	}
+	topic := strings.TrimSpace(r.FormValue("topic"))
+	if topic == "" {
+		topic = "support"
+	}
+	severity, err := parseStatus(r.FormValue("severity"))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	ctx := r.Context()
+	incident, ok := c.escalations.Start(ctx, statekit.EscalationSpec{
+		Title:    title,
+		Severity: severity,
+		Topics: map[string]any{
+			"component": c.name,
+			"group":     c.group,
+			"region":    c.region,
+			"request":   "demo-" + strconv.FormatInt(time.Now().UnixNano(), 10),
+		},
+	})
+	if !ok {
+		http.Error(w, "escalation budget exhausted", http.StatusTooManyRequests)
+		return
+	}
+	incident.AddLog(ctx, time.Now(), topic, strings.TrimSpace(r.FormValue("message")), map[string]any{
+		"queue_depth": c.queueDepth.Get(),
+		"state":       c.app.Snapshot().Status.String(),
+	})
+	c.mu.Lock()
+	c.lastEscalationID = incident.ID()
+	c.requests.Inc()
+	c.mu.Unlock()
+	http.Redirect(w, r, c.prefix+"/", http.StatusSeeOther)
 }
 
 func (c *leafComponent) handleSet(w http.ResponseWriter, r *http.Request) {
@@ -180,12 +235,13 @@ func (c *leafComponent) handleMetric(w http.ResponseWriter, r *http.Request) {
 }
 
 type leafView struct {
-	Name       string
-	Group      string
-	Region     string
-	Prefix     string
-	Snapshot   statekit.Snapshot
-	QueueDepth int64
+	Name             string
+	Group            string
+	Region           string
+	Prefix           string
+	Snapshot         statekit.Snapshot
+	QueueDepth       int64
+	LastEscalationID string
 }
 
 type mountedScraper struct {
@@ -195,12 +251,12 @@ type mountedScraper struct {
 	reg  *statekit.Registry
 }
 
-func newMountedScraper(name, cfgPath, role string) *mountedScraper {
+func newMountedScraper(name, cfgPath, role string, opts ...scraper.Option) *mountedScraper {
 	cfg, err := scraper.LoadConfig(cfgPath)
 	if err != nil {
 		log.Fatalf("load scraper config %s: %v", cfgPath, err)
 	}
-	sc, err := scraper.New(*cfg)
+	sc, err := scraper.New(*cfg, opts...)
 	if err != nil {
 		log.Fatalf("new scraper %s: %v", name, err)
 	}
@@ -245,17 +301,17 @@ func main() {
 		leaf.mount(mux)
 	}
 
-	east := newMountedScraper("regional-east", filepath.Join(*configDir, "scraper-east.yaml"), "regional")
-	west := newMountedScraper("regional-west", filepath.Join(*configDir, "scraper-west.yaml"), "regional")
+	store := storage.NewMemoryStore(storage.WithDocumentCache(
+		storage.NewFreecacheDocumentCache[statekit.StateDisplayDocument](32<<20),
+		5*time.Minute,
+	))
+	east := newMountedScraper("regional-east", filepath.Join(*configDir, "scraper-east.yaml"), "regional", scraper.WithEscalationIngestor(store))
+	west := newMountedScraper("regional-west", filepath.Join(*configDir, "scraper-west.yaml"), "regional", scraper.WithEscalationIngestor(store))
 	fleet := newMountedScraper("fleet-aggregator", filepath.Join(*configDir, "fleet-aggregator.yaml"), "fleet")
 	east.mount(mux, "/scraper/east")
 	west.mount(mux, "/scraper/west")
 	fleet.mount(mux, "/fleet")
 
-	store := storage.NewMemoryStore(storage.WithDocumentCache(
-		storage.NewFreecacheDocumentCache[statekit.StateDisplayDocument](32<<20),
-		5*time.Minute,
-	))
 	api := storage.NewAPI(store)
 	mux.Handle("/api/", http.StripPrefix("/api", api.Handler()))
 	mux.Handle("/storage/", http.StripPrefix("/storage", storage.UIHandler(storage.UIOptions{APIBase: "/api"})))
@@ -376,6 +432,7 @@ const homeHTML = `<!doctype html>
           <li><a href="/api/state/groups?by=group_name">groups by group_name</a></li>
           <li><a href="/api/state/groups?by=label:region">groups by region</a></li>
           <li><a href="/api/state/events?limit=20">recent events</a></li>
+          <li><a href="/api/escalations/incidents">support incidents</a></li>
           <li><a href="/api/openapi.yaml">openapi.yaml</a></li>
           <li><a href="/storage/">storage console</a></li>
         </ul>

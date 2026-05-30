@@ -34,6 +34,10 @@ targets:
       paths: [/metrics]
       labels:
         subsystem: component-metrics
+    escalations:
+      path: /escalations
+      labels:
+        subsystem: support-escalations
 
   - id: billing-east
     name: billing-east
@@ -55,3 +59,7 @@ targets:
       paths: [/metrics]
       labels:
         subsystem: component-metrics
+    escalations:
+      path: /escalations
+      labels:
+        subsystem: support-escalations

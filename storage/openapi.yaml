@@ -117,6 +117,74 @@ paths:
                 type: array
                 items:
                   $ref: '#/components/schemas/StateEvent'
+  /escalations/doc:
+    post:
+      summary: Ingest an escalation display document
+      description: Accepts the YAML document served by a component's /escalations endpoint.
+      parameters:
+        - name: source
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: observed_at
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date-time
+      requestBody:
+        required: true
+        content:
+          text/yaml:
+            schema:
+              $ref: '#/components/schemas/EscalationDisplayDocument'
+      responses:
+        '204':
+          description: Stored
+  /escalations/incidents:
+    get:
+      summary: List stored escalation incidents
+      parameters:
+        - name: source
+          in: query
+          schema:
+            type: string
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [open, closed, acknowledged]
+        - name: id
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Escalation incidents
+          content:
+            text/yaml:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Incident'
+  /escalations/ack:
+    post:
+      summary: Mark a stored escalation incident acknowledged
+      parameters:
+        - name: source
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: id
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        '204':
+          description: Acknowledged
   /openapi.yaml:
     get:
       summary: Return this OpenAPI document
@@ -152,6 +220,75 @@ components:
           type: string
         value:
           type: string
+    EscalationDisplayDocument:
+      type: object
+      required: [kind, label_path, incidents]
+      properties:
+        kind:
+          type: string
+          example: statekit.escalation.v1
+        label_path:
+          type: array
+          items:
+            $ref: '#/components/schemas/StateDisplayLabel'
+        watermark:
+          type: string
+        incidents:
+          type: array
+          items:
+            $ref: '#/components/schemas/EscalationIncident'
+    EscalationIncident:
+      type: object
+      properties:
+        id:
+          type: string
+        scraped_from:
+          type: string
+        scrape_path:
+          type: string
+        title:
+          type: string
+        status:
+          type: string
+          enum: [open, closed, acknowledged]
+        created_at:
+          type: string
+          format: date-time
+        expires_at:
+          type: string
+          format: date-time
+        last_updated_at:
+          type: string
+          format: date-time
+        severity:
+          type: string
+          enum: [pass, warn, fail, down]
+        labels:
+          type: object
+          additionalProperties:
+            type: string
+        topics:
+          type: object
+          additionalProperties: true
+        events:
+          type: array
+          items:
+            $ref: '#/components/schemas/EscalationEvent'
+    EscalationEvent:
+      type: object
+      properties:
+        seq:
+          type: string
+        timestamp:
+          type: string
+          format: date-time
+        topic:
+          type: string
+        message:
+          type: string
+        data:
+          type: object
+          additionalProperties: true
     Snapshot:
       type: object
       required: [name, status, importance, changed_at, changed_secs_ago]
@@ -400,3 +537,69 @@ components:
           format: date-time
         data:
           type: object
+    Incident:
+      type: object
+      properties:
+        identity:
+          type: string
+        source:
+          type: string
+        scraped_from:
+          type: string
+        scrape_path:
+          type: string
+        id:
+          type: string
+        title:
+          type: string
+        status:
+          type: string
+          enum: [open, closed, acknowledged]
+        created_at:
+          type: string
+          format: date-time
+        expires_at:
+          type: string
+          format: date-time
+        last_updated_at:
+          type: string
+          format: date-time
+        severity:
+          type: string
+          enum: [pass, warn, fail, down]
+        labels:
+          type: object
+          additionalProperties:
+            type: string
+        topics:
+          type: object
+          additionalProperties: true
+        events:
+          type: array
+          items:
+            $ref: '#/components/schemas/IncidentEvent'
+        observed_at:
+          type: string
+          format: date-time
+    IncidentEvent:
+      type: object
+      properties:
+        event_key:
+          type: string
+        identity:
+          type: string
+        seq:
+          type: string
+        timestamp:
+          type: string
+          format: date-time
+        topic:
+          type: string
+        message:
+          type: string
+        data:
+          type: object
+          additionalProperties: true
+        observed_at:
+          type: string
+          format: date-time

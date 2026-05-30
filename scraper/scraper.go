@@ -28,13 +28,22 @@ type Scraper struct {
 	cfg    Config
 	client *http.Client
 
-	states  []statekit.State
-	metrics *scrapedMetricsCollector
-	tasks   []*taskRunner
+	states    []statekit.State
+	metrics   *scrapedMetricsCollector
+	incidents EscalationIngestor
+	tasks     []*taskRunner
+}
+
+type Option func(*Scraper)
+
+func WithEscalationIngestor(ingestor EscalationIngestor) Option {
+	return func(s *Scraper) {
+		s.incidents = ingestor
+	}
 }
 
 // New builds a Scraper from a parsed Config.
-func New(cfg Config) (*Scraper, error) {
+func New(cfg Config, opts ...Option) (*Scraper, error) {
 	if err := validate(&cfg); err != nil {
 		return nil, err
 	}
@@ -42,6 +51,9 @@ func New(cfg Config) (*Scraper, error) {
 		cfg:     cfg,
 		client:  &http.Client{},
 		metrics: newScrapedMetricsCollector(),
+	}
+	for _, opt := range opts {
+		opt(s)
 	}
 
 	for _, target := range cfg.Targets {
@@ -59,6 +71,13 @@ func New(cfg Config) (*Scraper, error) {
 		}
 		if target.Metrics != nil {
 			runner := buildMetrics(target, cfg, s.client, s.metrics)
+			s.tasks = append(s.tasks, runner)
+		}
+		if target.Escalations != nil {
+			if s.incidents == nil {
+				return nil, fmt.Errorf("target %q has escalations configured without an escalation ingestor", target.Name)
+			}
+			runner := buildEscalations(target, cfg, s.client, s.incidents)
 			s.tasks = append(s.tasks, runner)
 		}
 	}
@@ -124,6 +143,9 @@ func validate(cfg *Config) error {
 		seen[key] = struct{}{}
 		if t.BaseURL == "" {
 			return fmt.Errorf("target %q has empty base_url", t.Name)
+		}
+		if t.Escalations != nil && t.Escalations.Path == "" {
+			return fmt.Errorf("target %q escalations has empty path", t.Name)
 		}
 		checks := map[string]struct{}{}
 		for j := range t.Liveness {

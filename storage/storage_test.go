@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/gur-shatz/statekit"
+	"gopkg.in/yaml.v3"
 )
 
 func TestMemoryStoreIngestsCurrentLabelsAndGroups(t *testing.T) {
@@ -253,6 +254,112 @@ func TestMemoryStoreCachesZstdYAMLDocument(t *testing.T) {
 	}
 }
 
+func TestMemoryStoreIngestsEscalationsAndDedupesEvents(t *testing.T) {
+	store := NewMemoryStore()
+	observedAt := time.Date(2026, 5, 30, 12, 0, 0, 0, time.UTC)
+	doc := statekit.EscalationDisplayDocument{
+		Kind:      statekit.EscalationDisplayKind,
+		LabelPath: []statekit.StateDisplayLabel{{Name: "component", Value: "issuer"}},
+		Watermark: "2",
+		Incidents: []statekit.EscalationIncident{{
+			ID:            "ID-0000000001",
+			ScrapedFrom:   "issuer-origin",
+			ScrapePath:    "regional-east > issuer-origin",
+			Title:         "checkout failed",
+			Status:        statekit.EscalationOpen,
+			CreatedAt:     observedAt,
+			ExpiresAt:     observedAt.Add(time.Hour),
+			LastUpdatedAt: observedAt,
+			Severity:      statekit.Fail,
+			Labels:        map[string]string{"region": "use1", "subsystem": "support"},
+			Topics:        map[string]any{"request_id": "req-1"},
+			Events: []statekit.EscalationEvent{
+				{Seq: "1", Timestamp: observedAt, Topic: "incident", Message: "created"},
+				{Seq: "2", Timestamp: observedAt, Topic: "http", Message: "500"},
+			},
+		}},
+	}
+
+	if err := store.IngestEscalations(context.Background(), "issuer-east", doc, observedAt); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.IngestEscalations(context.Background(), "issuer-east", doc, observedAt.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+
+	incidents, err := store.Incidents(context.Background(), IncidentFilter{Source: "issuer-origin"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(incidents) != 1 {
+		t.Fatalf("incidents len = %d, want 1: %+v", len(incidents), incidents)
+	}
+	incident := incidents[0]
+	if incident.Source != "issuer-origin" || incident.ScrapedFrom != "issuer-origin" || incident.ScrapePath != "regional-east > issuer-origin" {
+		t.Fatalf("incident provenance = source %q scraped_from %q scrape_path %q", incident.Source, incident.ScrapedFrom, incident.ScrapePath)
+	}
+	if incident.Labels["component"] != "issuer" || incident.Labels["region"] != "use1" ||
+		incident.Labels["subsystem"] != "support" || incident.Topics["request_id"] != "req-1" {
+		t.Fatalf("incident metadata = labels %+v topics %+v", incident.Labels, incident.Topics)
+	}
+	if len(incident.Events) != 2 {
+		t.Fatalf("events len = %d, want 2: %+v", len(incident.Events), incident.Events)
+	}
+	if incident.Events[0].Seq != "1" || incident.Events[1].Seq != "2" {
+		t.Fatalf("events order = %+v", incident.Events)
+	}
+
+	if err := store.AcknowledgeIncident(context.Background(), "issuer-origin", "ID-0000000001", observedAt); err != nil {
+		t.Fatal(err)
+	}
+	acknowledged, err := store.Incidents(context.Background(), IncidentFilter{Status: statekit.EscalationAcknowledged})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(acknowledged) != 1 {
+		t.Fatalf("acknowledged incidents = %+v", acknowledged)
+	}
+}
+
+func TestMemoryStoreKeepsReusedIncidentIDWithDifferentStartTime(t *testing.T) {
+	store := NewMemoryStore()
+	createdAt := time.Date(2026, 5, 30, 12, 0, 0, 0, time.UTC)
+	doc := func(title string, t time.Time) statekit.EscalationDisplayDocument {
+		return statekit.EscalationDisplayDocument{
+			Kind: statekit.EscalationDisplayKind,
+			Incidents: []statekit.EscalationIncident{{
+				ID:            "ID-0000000001",
+				Title:         title,
+				Status:        statekit.EscalationOpen,
+				CreatedAt:     t,
+				ExpiresAt:     t.Add(time.Hour),
+				LastUpdatedAt: t,
+				Events: []statekit.EscalationEvent{
+					{Seq: "epoch:1", Timestamp: t, Topic: "incident", Message: "created"},
+				},
+			}},
+		}
+	}
+
+	if err := store.IngestEscalations(context.Background(), "issuer-east", doc("before restart", createdAt), createdAt); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.IngestEscalations(context.Background(), "issuer-east", doc("after restart", createdAt.Add(time.Second)), createdAt.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+
+	incidents, err := store.Incidents(context.Background(), IncidentFilter{Source: "issuer-east", ID: "ID-0000000001"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(incidents) != 2 {
+		t.Fatalf("incidents len = %d, want 2: %+v", len(incidents), incidents)
+	}
+	if incidents[0].Title != "after restart" || incidents[1].Title != "before restart" {
+		t.Fatalf("incidents were merged incorrectly: %+v", incidents)
+	}
+}
+
 func TestAPIExposesCurrentGroupsEventsAndOpenAPI(t *testing.T) {
 	store := NewMemoryStore()
 	if err := store.IngestDocument(context.Background(), testDocument(), time.Date(2026, 5, 16, 12, 0, 0, 0, time.UTC)); err != nil {
@@ -294,6 +401,42 @@ func TestAPIExposesCurrentGroupsEventsAndOpenAPI(t *testing.T) {
 	defer openAPIResp.Body.Close()
 	if got := openAPIResp.Header.Get("Content-Type"); got != "text/yaml; charset=utf-8" {
 		t.Fatalf("openapi content type = %q", got)
+	}
+}
+
+func TestAPIExposesIncidentsAsYAML(t *testing.T) {
+	store := NewMemoryStore()
+	createdAt := time.Date(2026, 5, 30, 12, 0, 0, 0, time.UTC)
+	if err := store.IngestEscalations(context.Background(), "issuer-east", statekit.EscalationDisplayDocument{
+		Kind: statekit.EscalationDisplayKind,
+		Incidents: []statekit.EscalationIncident{{
+			ID:            "ID-0000000001",
+			Title:         "checkout failed",
+			Status:        statekit.EscalationOpen,
+			CreatedAt:     createdAt,
+			ExpiresAt:     createdAt.Add(time.Hour),
+			LastUpdatedAt: createdAt,
+		}},
+	}, createdAt); err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(NewAPI(store).Handler())
+	defer server.Close()
+
+	resp, err := http.Get(server.URL + "/escalations/incidents")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if got := resp.Header.Get("Content-Type"); got != "text/yaml; charset=utf-8" {
+		t.Fatalf("content type = %q, want yaml", got)
+	}
+	var incidents []Incident
+	if err := yaml.NewDecoder(resp.Body).Decode(&incidents); err != nil {
+		t.Fatal(err)
+	}
+	if len(incidents) != 1 || incidents[0].ID != "ID-0000000001" {
+		t.Fatalf("incidents = %+v", incidents)
 	}
 }
 

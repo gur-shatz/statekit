@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -19,10 +20,13 @@ import (
 // entry point for every state document received from a component or scraper.
 type Store interface {
 	IngestDocument(ctx context.Context, doc statekit.StateDisplayDocument, observedAt time.Time) error
+	IngestEscalations(ctx context.Context, source string, doc statekit.EscalationDisplayDocument, observedAt time.Time) error
 	Current(ctx context.Context, filter CurrentFilter) ([]CurrentState, error)
 	Groups(ctx context.Context, query GroupQuery) ([]GroupBucket, error)
 	Events(ctx context.Context, filter EventFilter) ([]StateEvent, error)
 	Targets(ctx context.Context) ([]TargetDocument, error)
+	Incidents(ctx context.Context, filter IncidentFilter) ([]Incident, error)
+	AcknowledgeIncident(ctx context.Context, source, id string, at time.Time) error
 }
 
 type StateNode struct {
@@ -142,6 +146,42 @@ type EventFilter struct {
 	Limit    int    `json:"limit,omitempty"`
 }
 
+type Incident struct {
+	Identity      string                       `json:"identity"`
+	Source        string                       `json:"source"`
+	ScrapedFrom   string                       `json:"scraped_from,omitempty"`
+	ScrapePath    string                       `json:"scrape_path,omitempty"`
+	ID            string                       `json:"id"`
+	Title         string                       `json:"title"`
+	Status        string                       `json:"status"`
+	CreatedAt     time.Time                    `json:"created_at"`
+	ExpiresAt     time.Time                    `json:"expires_at"`
+	LastUpdatedAt time.Time                    `json:"last_updated_at"`
+	Severity      string                       `json:"severity,omitempty"`
+	LabelPath     []statekit.StateDisplayLabel `json:"label_path,omitempty"`
+	Labels        map[string]string            `json:"labels,omitempty"`
+	Topics        map[string]any               `json:"topics,omitempty"`
+	Events        []IncidentEvent              `json:"events,omitempty"`
+	ObservedAt    time.Time                    `json:"observed_at"`
+}
+
+type IncidentEvent struct {
+	EventKey   string         `json:"event_key"`
+	Identity   string         `json:"identity"`
+	Seq        string         `json:"seq"`
+	Timestamp  time.Time      `json:"timestamp"`
+	Topic      string         `json:"topic"`
+	Message    string         `json:"message,omitempty"`
+	Data       map[string]any `json:"data,omitempty"`
+	ObservedAt time.Time      `json:"observed_at"`
+}
+
+type IncidentFilter struct {
+	Source string `json:"source,omitempty"`
+	Status string `json:"status,omitempty"`
+	ID     string `json:"id,omitempty"`
+}
+
 type MemoryStore struct {
 	mu                 sync.RWMutex
 	nodes              map[string]StateNode
@@ -149,6 +189,8 @@ type MemoryStore struct {
 	events             map[string]StateEvent
 	order              []string
 	targets            map[string]TargetDocument
+	incidents          map[string]Incident
+	incidentEvents     map[string]map[string]IncidentEvent
 	docScopeIdentities map[string]map[string]struct{}
 	docScopeTargets    map[string]map[string]struct{}
 	docCache           DocumentCache[statekit.StateDisplayDocument]
@@ -170,6 +212,8 @@ func NewMemoryStore(opts ...MemoryStoreOption) *MemoryStore {
 		current:            map[string]CurrentObservation{},
 		events:             map[string]StateEvent{},
 		targets:            map[string]TargetDocument{},
+		incidents:          map[string]Incident{},
+		incidentEvents:     map[string]map[string]IncidentEvent{},
 		docScopeIdentities: map[string]map[string]struct{}{},
 		docScopeTargets:    map[string]map[string]struct{}{},
 	}
@@ -177,6 +221,58 @@ func NewMemoryStore(opts ...MemoryStoreOption) *MemoryStore {
 		opt(store)
 	}
 	return store
+}
+
+func (s *MemoryStore) IngestEscalations(_ context.Context, source string, doc statekit.EscalationDisplayDocument, observedAt time.Time) error {
+	if observedAt.IsZero() {
+		observedAt = time.Now()
+	}
+	labels := labelsFromLabelPath(doc.LabelPath)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, in := range doc.Incidents {
+		origin := firstNonEmpty(in.ScrapedFrom, source)
+		scrapePath := firstNonEmpty(in.ScrapePath, source)
+		incidentLabels := mergeStringLabels(labels, in.Labels)
+		identity := incidentIdentity(origin, in.ID, in.CreatedAt)
+		incident := s.incidents[identity]
+		incident.Identity = identity
+		incident.Source = origin
+		incident.ScrapedFrom = origin
+		incident.ScrapePath = scrapePath
+		incident.ID = in.ID
+		incident.Title = in.Title
+		incident.Status = in.Status
+		incident.CreatedAt = in.CreatedAt
+		incident.ExpiresAt = in.ExpiresAt
+		incident.LastUpdatedAt = in.LastUpdatedAt
+		incident.Severity = in.Severity.String()
+		incident.LabelPath = append([]statekit.StateDisplayLabel(nil), doc.LabelPath...)
+		incident.Labels = incidentLabels
+		incident.Topics = cloneData(in.Topics)
+		incident.ObservedAt = observedAt
+		events := s.incidentEvents[identity]
+		if events == nil {
+			events = map[string]IncidentEvent{}
+			s.incidentEvents[identity] = events
+		}
+		for _, event := range in.Events {
+			key := hashJSON(map[string]any{"scraped_from": origin, "incident_id": in.ID, "created_at": in.CreatedAt, "seq": event.Seq})
+			events[key] = IncidentEvent{
+				EventKey:   key,
+				Identity:   identity,
+				Seq:        event.Seq,
+				Timestamp:  event.Timestamp,
+				Topic:      event.Topic,
+				Message:    event.Message,
+				Data:       cloneData(event.Data),
+				ObservedAt: observedAt,
+			}
+		}
+		incident.Events = sortedIncidentEvents(events)
+		s.incidents[identity] = incident
+	}
+	return nil
 }
 
 func (s *MemoryStore) IngestDocument(ctx context.Context, doc statekit.StateDisplayDocument, observedAt time.Time) error {
@@ -345,6 +441,61 @@ func (s *MemoryStore) Targets(_ context.Context) ([]TargetDocument, error) {
 	return out, nil
 }
 
+func (s *MemoryStore) Incidents(_ context.Context, filter IncidentFilter) ([]Incident, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	out := make([]Incident, 0, len(s.incidents))
+	for _, incident := range s.incidents {
+		if filter.Source != "" && incident.Source != filter.Source {
+			continue
+		}
+		if filter.ID != "" && incident.ID != filter.ID {
+			continue
+		}
+		if filter.Status != "" && incident.Status != filter.Status {
+			continue
+		}
+		incident.Events = sortedIncidentEvents(s.incidentEvents[incident.Identity])
+		out = append(out, incident)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if !out[i].LastUpdatedAt.Equal(out[j].LastUpdatedAt) {
+			return out[i].LastUpdatedAt.After(out[j].LastUpdatedAt)
+		}
+		return out[i].Identity < out[j].Identity
+	})
+	return out, nil
+}
+
+func (s *MemoryStore) AcknowledgeIncident(_ context.Context, source, id string, at time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var identity string
+	var incident Incident
+	var ok bool
+	for candidateIdentity, candidate := range s.incidents {
+		if candidate.Source != source || candidate.ID != id {
+			continue
+		}
+		if !ok || candidate.CreatedAt.After(incident.CreatedAt) {
+			identity = candidateIdentity
+			incident = candidate
+			ok = true
+		}
+	}
+	if !ok {
+		return fmt.Errorf("incident %q from source %q not found", id, source)
+	}
+	incident.Status = statekit.EscalationAcknowledged
+	if at.IsZero() {
+		at = time.Now()
+	}
+	incident.ObservedAt = at
+	s.incidents[identity] = incident
+	return nil
+}
+
 type flattenedState struct {
 	Node    StateNode
 	Current CurrentObservation
@@ -473,6 +624,14 @@ func labelsFromAny(value any) map[string]string {
 	return out
 }
 
+func labelsFromLabelPath(path []statekit.StateDisplayLabel) map[string]string {
+	out := map[string]string{}
+	for _, label := range path {
+		out[label.Name] = label.Value
+	}
+	return out
+}
+
 func identityFor(labelPath []statekit.StateDisplayLabel, statePath []string, scrapedFrom, scrapePath, snapshotName string) string {
 	return hashJSON(map[string]any{
 		"label_path":    labelPath,
@@ -540,6 +699,19 @@ func cloneLabels(in map[string]string) map[string]string {
 	return out
 }
 
+func mergeStringLabels(maps ...map[string]string) map[string]string {
+	out := map[string]string{}
+	for _, m := range maps {
+		for k, v := range m {
+			out[k] = v
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
 func cloneData(in map[string]any) map[string]any {
 	if len(in) == 0 {
 		return nil
@@ -549,6 +721,36 @@ func cloneData(in map[string]any) map[string]any {
 		out[k] = v
 	}
 	return out
+}
+
+func incidentIdentity(source, id string, createdAt time.Time) string {
+	return hashJSON(map[string]any{"source": source, "incident_id": id, "created_at": createdAt})
+}
+
+func sortedIncidentEvents(events map[string]IncidentEvent) []IncidentEvent {
+	out := make([]IncidentEvent, 0, len(events))
+	for _, event := range events {
+		out = append(out, event)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		left, leftErr := parseIncidentSeq(out[i].Seq)
+		right, rightErr := parseIncidentSeq(out[j].Seq)
+		if leftErr == nil && rightErr == nil && left != right {
+			return left < right
+		}
+		if out[i].Seq != out[j].Seq {
+			return out[i].Seq < out[j].Seq
+		}
+		return out[i].EventKey < out[j].EventKey
+	})
+	return out
+}
+
+func parseIncidentSeq(seq string) (uint64, error) {
+	if _, after, ok := strings.Cut(seq, ":"); ok {
+		seq = after
+	}
+	return strconv.ParseUint(seq, 10, 64)
 }
 
 func stableString(value any) string {
