@@ -10,7 +10,7 @@ history, and evaluation logic. `statekit` provides two kinds of objects:
 - **Metrics** report numeric values from inside the component.
 
 A `Registry` enumerates both, applies const labels, and serves HTTP
-endpoints for JSON snapshots and Prometheus scrapes.
+endpoints for state display, health status, and Prometheus scrapes.
 
 ## Example
 
@@ -360,6 +360,9 @@ registered states (Informational children capped at warn), data carrying
 the count distribution per status, and reason grouping the non-pass
 states like `fail:db,xx warn:zzz`.
 
+`/health` returns the aggregated health state as plain text: `pass`, `warn`,
+or `fail`. Internal `down` state is reported as `fail` on this endpoint.
+
 ```yaml
 kind: statekit.state.v1
 version: 1.4.2
@@ -533,6 +536,7 @@ go run ./examples/componentdemo
 ```
 
 The demo serves a web UI at `http://localhost:19080/`, the state display
-document (YAML) at `/state`, and Prometheus text at `/metrics`.
+document (YAML) at `/state`, plain health status at `/health`, and
+Prometheus text at `/metrics`.
 
 Set `PORT=29080` or another value if port 19080 is already in use.

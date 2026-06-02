@@ -726,6 +726,64 @@ func TestRegistryMountIsolatesInstancesByPrefix(t *testing.T) {
 	if strings.Contains(westText, "history:") {
 		t.Fatalf("short mounted state should omit history:\n%s", westText)
 	}
+
+	eastHealth := httptest.NewRecorder()
+	mux.ServeHTTP(eastHealth, httptest.NewRequest("GET", "/east/health", nil))
+	if got := eastHealth.Body.String(); got != "warn" {
+		t.Fatalf("east mounted health = %q, want warn", got)
+	}
+
+	westHealth := httptest.NewRecorder()
+	mux.ServeHTTP(westHealth, httptest.NewRequest("GET", "/west/health", nil))
+	if got := westHealth.Body.String(); got != "fail" {
+		t.Fatalf("west mounted health = %q, want fail", got)
+	}
+}
+
+func TestRegistryHealthHandlerReturnsAggregatedStatus(t *testing.T) {
+	reg := NewRegistry()
+	state := NewManualState("database")
+	if err := reg.Register(state); err != nil {
+		t.Fatal(err)
+	}
+
+	response := httptest.NewRecorder()
+	reg.HealthHandler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/health", nil))
+	if got := response.Header().Get("Content-Type"); got != "text/plain; charset=utf-8" {
+		t.Fatalf("content type = %q", got)
+	}
+	if got := response.Body.String(); got != "pass" {
+		t.Fatalf("health = %q, want pass", got)
+	}
+
+	state.Warn("slow", nil)
+	response = httptest.NewRecorder()
+	reg.HealthHandler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/health", nil))
+	if got := response.Body.String(); got != "warn" {
+		t.Fatalf("health = %q, want warn", got)
+	}
+
+	state.Fail("connection refused", nil)
+	response = httptest.NewRecorder()
+	reg.HealthHandler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/health", nil))
+	if got := response.Body.String(); got != "fail" {
+		t.Fatalf("health = %q, want fail", got)
+	}
+}
+
+func TestRegistryHealthHandlerMapsDownToFail(t *testing.T) {
+	reg := NewRegistry()
+	state := NewManualState("database")
+	state.Down("offline", nil)
+	if err := reg.Register(state); err != nil {
+		t.Fatal(err)
+	}
+
+	response := httptest.NewRecorder()
+	reg.HealthHandler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/health", nil))
+	if got := response.Body.String(); got != "fail" {
+		t.Fatalf("health = %q, want fail", got)
+	}
 }
 
 func TestRegistryPrometheusGroupsDescriptorsWithSamples(t *testing.T) {
