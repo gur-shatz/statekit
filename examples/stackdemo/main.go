@@ -12,7 +12,6 @@ import (
 	"context"
 	_ "embed"
 	"flag"
-	"fmt"
 	"html/template"
 	"log"
 	"net/http"
@@ -368,18 +367,7 @@ func handleHome(w http.ResponseWriter, _ *http.Request) {
 }
 
 func parseStatus(s string) (statekit.Status, error) {
-	switch strings.ToLower(s) {
-	case "pass":
-		return statekit.Pass, nil
-	case "warn":
-		return statekit.Warn, nil
-	case "fail":
-		return statekit.Fail, nil
-	case "down":
-		return statekit.Down, nil
-	default:
-		return statekit.Pass, fmt.Errorf("unknown status %q", s)
-	}
+	return statekit.ParseStatus(strings.ToLower(s))
 }
 
 const homeHTML = `<!doctype html>
@@ -400,6 +388,13 @@ const homeHTML = `<!doctype html>
     .panel { background: #fff; border: 1px solid #d9dee7; border-radius: 8px; padding: 14px; }
     ul { margin: 0; padding-left: 18px; line-height: 1.8; }
     pre { background: #101820; color: #edf2f7; padding: 12px; border-radius: 6px; overflow:auto; }
+    form { display: grid; gap: 10px; }
+    label { display: grid; gap: 5px; color: #526070; font-size: 13px; font-weight: 650; }
+    select, input, button { min-height: 36px; border: 1px solid #c9d1dd; border-radius: 6px; padding: 7px 10px; font: inherit; background: #fff; }
+    button { border-color: #1f6feb; background: #1f6feb; color: #fff; font-weight: 720; cursor: pointer; }
+    button:disabled { border-color: #c9d1dd; background: #eef1f5; color: #9aa6b5; cursor: default; }
+    .buttons { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    .opsStatus { margin: 10px 0 0; color: #526070; font-size: 13px; }
     @media (max-width: 820px) { .grid { grid-template-columns: 1fr; } }
   </style>
 </head>
@@ -432,10 +427,34 @@ const homeHTML = `<!doctype html>
           <li><a href="/api/state/groups?by=group_name">groups by group_name</a></li>
           <li><a href="/api/state/groups?by=label:region">groups by region</a></li>
           <li><a href="/api/state/events?limit=20">recent events</a></li>
-          <li><a href="/api/escalations/incidents">support incidents</a></li>
+          <li><a href="/api/escalations/incidents">all incidents</a></li>
+          <li><a href="/api/escalations/incidents?type=deployment">deployment incidents</a></li>
           <li><a href="/api/openapi.yaml">openapi.yaml</a></li>
           <li><a href="/storage/">storage console</a></li>
         </ul>
+      </section>
+      <section class="panel">
+        <h2>Fleet Ops</h2>
+        <form id="opsForm">
+          <label>Type
+            <select id="opsType">
+              <option value="deployment">deployment</option>
+              <option value="build">build</option>
+              <option value="rollback">rollback</option>
+            </select>
+          </label>
+          <label>Title
+            <input id="opsTitle" value="deploy v1.2.3 to us-east-1">
+          </label>
+          <label>Message
+            <input id="opsMessage" value="triggered from stackdemo">
+          </label>
+          <div class="buttons">
+            <button type="submit">Start</button>
+            <button type="button" id="opsClose" disabled>Close last</button>
+          </div>
+        </form>
+        <p class="opsStatus" id="opsStatus">Markers appear on the storage console timeline.</p>
       </section>
     </div>
     <h2>Config Files</h2>
@@ -443,5 +462,51 @@ const homeHTML = `<!doctype html>
 examples/stackdemo/config/scraper-west.yaml
 examples/stackdemo/config/fleet-aggregator.yaml</pre>
   </main>
+  <script>
+    var opsLast = null;
+    var opsStatus = document.getElementById("opsStatus");
+    var opsClose = document.getElementById("opsClose");
+
+    function postGlobal(body, done) {
+      fetch("/api/escalations/global", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      }).then(function (res) {
+        if (!res.ok) throw new Error(res.status + " " + res.statusText);
+        return res.json();
+      }).then(done).catch(function (err) {
+        opsStatus.textContent = "error: " + err.message;
+      });
+    }
+
+    document.getElementById("opsForm").addEventListener("submit", function (e) {
+      e.preventDefault();
+      postGlobal({
+        type: document.getElementById("opsType").value,
+        title: document.getElementById("opsTitle").value,
+        message: document.getElementById("opsMessage").value,
+        source: "stackdemo-ops",
+      }, function (incident) {
+        opsLast = incident;
+        opsClose.disabled = false;
+        opsStatus.textContent = "started " + incident.type + " " + incident.id;
+      });
+    });
+
+    opsClose.addEventListener("click", function () {
+      if (!opsLast) return;
+      postGlobal({
+        source: opsLast.source,
+        id: opsLast.id,
+        status: "closed",
+        message: document.getElementById("opsMessage").value,
+      }, function (incident) {
+        opsStatus.textContent = "closed " + incident.type + " " + incident.id;
+        opsLast = null;
+        opsClose.disabled = true;
+      });
+    });
+  </script>
 </body>
 </html>`

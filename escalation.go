@@ -18,7 +18,26 @@ const (
 	EscalationOpen         = "open"
 	EscalationClosed       = "closed"
 	EscalationAcknowledged = "acknowledged"
+
+	// Well-known incident types. An empty type is a regular component
+	// incident. The global types describe fleet-wide operations and are
+	// rendered as system-wide markers by consumers such as the storage
+	// console timeline.
+	EscalationTypeBuild      = "build"
+	EscalationTypeDeployment = "deployment"
+	EscalationTypeRollback   = "rollback"
 )
+
+// GlobalEscalationType reports whether an incident type describes a
+// fleet-wide operation rather than a component-scoped incident.
+func GlobalEscalationType(t string) bool {
+	switch t {
+	case EscalationTypeBuild, EscalationTypeDeployment, EscalationTypeRollback:
+		return true
+	default:
+		return false
+	}
+}
 
 type EscalationSource interface {
 	EscalationDisplay(after, ack string) EscalationDisplayDocument
@@ -36,6 +55,7 @@ type EscalationIncident struct {
 	ID            string            `json:"id" yaml:"id"`
 	ScrapedFrom   string            `json:"scraped_from,omitempty" yaml:"scraped_from,omitempty"`
 	ScrapePath    string            `json:"scrape_path,omitempty" yaml:"scrape_path,omitempty"`
+	Type          string            `json:"type,omitempty" yaml:"type,omitempty"`
 	Title         string            `json:"title" yaml:"title"`
 	Status        string            `json:"status" yaml:"status"`
 	CreatedAt     time.Time         `json:"created_at" yaml:"created_at"`
@@ -56,6 +76,7 @@ type EscalationEvent struct {
 }
 
 type EscalationSpec struct {
+	Type     string
 	Title    string
 	Severity Status
 	TTL      time.Duration
@@ -101,6 +122,7 @@ type Escalations struct {
 
 type localIncident struct {
 	ID            string
+	Type          string
 	Title         string
 	Status        string
 	CreatedAt     time.Time
@@ -145,6 +167,7 @@ func (e *Escalations) Start(_ context.Context, spec EscalationSpec) (*Escalation
 	id := fmt.Sprintf("ID-%010d", e.nextID)
 	inc := &localIncident{
 		ID:            id,
+		Type:          spec.Type,
 		Title:         spec.Title,
 		Status:        EscalationOpen,
 		CreatedAt:     now,
@@ -296,6 +319,7 @@ func (i *localIncident) snapshot(afterSeq uint64) EscalationIncident {
 	}
 	return EscalationIncident{
 		ID:            i.ID,
+		Type:          i.Type,
 		Title:         i.Title,
 		Status:        i.Status,
 		CreatedAt:     i.CreatedAt,

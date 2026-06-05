@@ -18,7 +18,7 @@ func TestEscalationsBudgetAndAckClearsBufferedEvents(t *testing.T) {
 		WithEscalationPolicy(EscalationPolicy{MaxUnacknowledged: 1, TTL: time.Hour}),
 	)
 
-	first, ok := escalations.Start(context.Background(), EscalationSpec{Title: "checkout failed", Severity: Fail})
+	first, ok := escalations.Start(context.Background(), EscalationSpec{Type: EscalationTypeDeployment, Title: "checkout failed", Severity: Fail})
 	if !ok {
 		t.Fatal("first escalation rejected")
 	}
@@ -33,6 +33,9 @@ func TestEscalationsBudgetAndAckClearsBufferedEvents(t *testing.T) {
 	}
 	if len(doc.Incidents) != 1 || len(doc.Incidents[0].Events) != 2 {
 		t.Fatalf("incident doc = %+v", doc.Incidents)
+	}
+	if doc.Incidents[0].Type != EscalationTypeDeployment {
+		t.Fatalf("incident type = %q, want %q", doc.Incidents[0].Type, EscalationTypeDeployment)
 	}
 
 	escalations.EscalationDisplay("", doc.Watermark)

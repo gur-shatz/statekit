@@ -79,6 +79,11 @@ func (s *Status) UnmarshalYAML(node *yaml.Node) error {
 	return nil
 }
 
+// ParseStatus converts a status name such as "pass" or "fail" into a Status.
+func ParseStatus(s string) (Status, error) {
+	return parseStatus(s)
+}
+
 func parseStatus(s string) (Status, error) {
 	switch strings.ToLower(s) {
 	case "pass":

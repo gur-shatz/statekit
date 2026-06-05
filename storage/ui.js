@@ -1,6 +1,7 @@
 const apiBase = window.STATEKIT_API_BASE || "/api";
 const statusOrder = ["pass", "warn", "fail", "down"];
 const timelineNowMarkerID = "now-marker";
+const globalIncidentTypes = new Set(["build", "deployment", "rollback"]);
 
 const state = {
   status: "",
@@ -9,6 +10,8 @@ const state = {
   current: [],
   events: [],
   targets: [],
+  incidents: [],
+  incidentFilter: "active",
   timelineWindowMs: 60 * 60 * 1000,
   systemTimeline: null,
 };
@@ -24,20 +27,22 @@ function esc(value) {
 }
 
 async function fetchJSON(path) {
-  const res = await fetch(`${apiBase}${path}`);
+  const res = await fetch(`${apiBase}${path}`, { headers: { Accept: "application/json" } });
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
   return res.json();
 }
 
 async function refresh() {
   $("lastRefresh").textContent = "Refreshing...";
-  const [current, events, serverTargets] = await Promise.all([
+  const [current, events, serverTargets, incidents] = await Promise.all([
     fetchJSON("/state/current"),
     fetchJSON("/state/events?limit=500"),
     fetchJSON("/state/targets"),
+    fetchJSON("/escalations/incidents"),
   ]);
   state.current = current;
   state.events = events;
+  state.incidents = incidents || [];
   state.targets = state.projectionMode === "server" ? normalizeServerTargets(serverTargets) : buildTargets(current);
   if (!state.selectedTarget && state.targets.length) state.selectedTarget = state.targets[0].key;
   if (state.selectedTarget && !state.targets.some((t) => t.key === state.selectedTarget)) {
@@ -184,6 +189,7 @@ function render() {
   renderTotals();
   renderTargets();
   renderSystemTimeline();
+  renderIncidents();
   renderStates();
   renderEvents();
   $("lastRefresh").textContent = `Updated ${new Date().toLocaleTimeString()} from ${state.projectionMode}`;
@@ -377,15 +383,6 @@ function renderSystemTimeline() {
     container.innerHTML = `<div class="empty">Timeline library unavailable</div>`;
     return;
   }
-  if (!intervals.length) {
-    if (state.systemTimeline) {
-      state.systemTimeline.destroy();
-      state.systemTimeline = null;
-    }
-    container.innerHTML = `<div class="empty">No recent issue transitions</div>`;
-    return;
-  }
-
   const items = intervals.map((interval, idx) => ({
     id: `system-${interval.targetKey}-${idx}`,
     content: esc(`${interval.status} ${interval.targetName}`),
@@ -395,6 +392,15 @@ function renderSystemTimeline() {
     type: "range",
     className: `timeline-${interval.status}`,
   }));
+  items.push(...incidentTimelineItems(rangeStart, now));
+  if (!items.length) {
+    if (state.systemTimeline) {
+      state.systemTimeline.destroy();
+      state.systemTimeline = null;
+    }
+    container.innerHTML = `<div class="empty">No recent issue transitions or incidents</div>`;
+    return;
+  }
 
   const options = {
     stack: true,
@@ -409,6 +415,7 @@ function renderSystemTimeline() {
   };
 
   if (!state.systemTimeline) {
+    container.innerHTML = "";
     state.systemTimeline = new window.vis.Timeline(
       container,
       new window.vis.DataSet(items),
@@ -565,6 +572,97 @@ function reasonsFor(statuses) {
     .slice(0, 4);
 }
 
+function isGlobalIncident(incident) {
+  return globalIncidentTypes.has(incident.type || "");
+}
+
+function incidentTypeName(incident) {
+  return incident.type || "incident";
+}
+
+function cssToken(value) {
+  return String(value || "").replace(/[^a-z0-9_-]/gi, "");
+}
+
+function incidentSpan(incident, now) {
+  const start = incident.created_at;
+  const end = incident.status === "open" ? now : (incident.last_updated_at || incident.created_at);
+  return { start, end };
+}
+
+function incidentTimelineItems(rangeStart, now) {
+  return state.incidents
+    .map((incident) => ({ incident, span: incidentSpan(incident, now) }))
+    .filter(({ span }) => intervalOverlapsWindow(span, rangeStart, now))
+    .map(({ incident, span }) => {
+      const typeName = incidentTypeName(incident);
+      const global = isGlobalIncident(incident);
+      const label = `${typeName}: ${incident.title}`;
+      const tooltip = [typeName, incident.title, incident.status, incident.source]
+        .filter(Boolean).join(" · ");
+      return {
+        id: `incident-${incident.identity}`,
+        content: esc(label),
+        title: esc(tooltip),
+        start: span.start,
+        end: span.end,
+        type: global ? "background" : "range",
+        className: global
+          ? `timeline-global timeline-global-${cssToken(typeName)}`
+          : `timeline-incident timeline-${cssToken(incident.severity || "warn")}`,
+      };
+    });
+}
+
+function filteredIncidents() {
+  const filter = state.incidentFilter;
+  return state.incidents.filter((incident) => {
+    if (filter === "active") return incident.status !== "acknowledged";
+    if (filter === "global") return isGlobalIncident(incident);
+    if (!filter) return true;
+    return incident.status === filter;
+  });
+}
+
+function renderIncidents() {
+  const rows = filteredIncidents().map((incident) => {
+    const typeName = incidentTypeName(incident);
+    const severity = incident.severity || "";
+    const ack = incident.status === "acknowledged"
+      ? `<span class="subtle">acked</span>`
+      : `<button type="button" class="ackButton" data-source="${esc(incident.source)}" data-id="${esc(incident.id)}">Ack</button>`;
+    return `<div class="row">
+      <div><span class="typeChip type-${cssToken(typeName)}">${esc(typeName)}</span></div>
+      <div>${severity ? `<span class="pill ${cssToken(severity)}">${esc(severity)}</span>` : ""}</div>
+      <div><span class="incidentStatus status-${cssToken(incident.status)}">${esc(incident.status)}</span></div>
+      <div class="truncate" title="${esc(incident.title)}">
+        <div class="stateName truncate">${esc(incident.title)}</div>
+        <div class="subtle truncate">${esc(incident.id)}</div>
+      </div>
+      <div class="truncate subtle">${esc(incident.source)}</div>
+      <div class="subtle">${esc(formatTime(incident.created_at))}</div>
+      <div class="subtle">${esc(formatAge(secondsSince(incident.last_updated_at)))} ago</div>
+      <div>${ack}</div>
+    </div>`;
+  }).join("");
+  $("incidentsTitle").textContent = `Incidents (${filteredIncidents().length})`;
+  $("incidents").innerHTML = `<div class="row header">
+    <div>Type</div><div>Severity</div><div>Status</div><div>Title</div><div>Source</div><div>Started</div><div>Updated</div><div></div>
+  </div>${rows || `<div class="empty">No incidents</div>`}`;
+  $("incidents").querySelectorAll(".ackButton").forEach((button) => {
+    button.addEventListener("click", () => {
+      acknowledgeIncident(button.dataset.source, button.dataset.id).catch(showError);
+    });
+  });
+}
+
+async function acknowledgeIncident(source, id) {
+  const params = new URLSearchParams({ source, id });
+  const res = await fetch(`${apiBase}/escalations/ack?${params}`, { method: "POST" });
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  await refresh();
+}
+
 function formatTime(value) {
   if (!value) return "";
   const d = new Date(value);
@@ -596,6 +694,10 @@ function showError(err) {
 
 $("statusFilter").addEventListener("change", (e) => {
   state.status = e.target.value;
+  render();
+});
+$("incidentFilter").addEventListener("change", (e) => {
+  state.incidentFilter = e.target.value;
   render();
 });
 $("projectionMode").addEventListener("change", (e) => {

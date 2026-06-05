@@ -152,6 +152,7 @@ type Incident struct {
 	ScrapedFrom   string                       `json:"scraped_from,omitempty"`
 	ScrapePath    string                       `json:"scrape_path,omitempty"`
 	ID            string                       `json:"id"`
+	Type          string                       `json:"type,omitempty"`
 	Title         string                       `json:"title"`
 	Status        string                       `json:"status"`
 	CreatedAt     time.Time                    `json:"created_at"`
@@ -180,6 +181,7 @@ type IncidentFilter struct {
 	Source string `json:"source,omitempty"`
 	Status string `json:"status,omitempty"`
 	ID     string `json:"id,omitempty"`
+	Type   string `json:"type,omitempty"`
 }
 
 type MemoryStore struct {
@@ -241,6 +243,7 @@ func (s *MemoryStore) IngestEscalations(_ context.Context, source string, doc st
 		incident.ScrapedFrom = origin
 		incident.ScrapePath = scrapePath
 		incident.ID = in.ID
+		incident.Type = in.Type
 		incident.Title = in.Title
 		incident.Status = in.Status
 		incident.CreatedAt = in.CreatedAt
@@ -454,6 +457,9 @@ func (s *MemoryStore) Incidents(_ context.Context, filter IncidentFilter) ([]Inc
 			continue
 		}
 		if filter.Status != "" && incident.Status != filter.Status {
+			continue
+		}
+		if filter.Type != "" && incident.Type != filter.Type {
 			continue
 		}
 		incident.Events = sortedIncidentEvents(s.incidentEvents[incident.Identity])

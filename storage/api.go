@@ -3,6 +3,7 @@ package storage
 import (
 	"embed"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -34,6 +35,7 @@ func (a *API) Handler() http.Handler {
 	mux.HandleFunc("GET /escalations/incidents", a.handleIncidents)
 	mux.HandleFunc("POST /escalations/doc", a.handleIngestEscalations)
 	mux.HandleFunc("POST /escalations/ack", a.handleAcknowledgeIncident)
+	mux.HandleFunc("POST /escalations/global", a.handleGlobalIncident)
 	return mux
 }
 
@@ -102,7 +104,12 @@ func (a *API) handleIncidents(w http.ResponseWriter, r *http.Request) {
 		Source: r.URL.Query().Get("source"),
 		Status: r.URL.Query().Get("status"),
 		ID:     r.URL.Query().Get("id"),
+		Type:   r.URL.Query().Get("type"),
 	})
+	if strings.Contains(r.Header.Get("Accept"), "application/json") {
+		writeJSON(w, items, err)
+		return
+	}
 	writeYAML(w, items, err)
 }
 
@@ -131,6 +138,165 @@ func (a *API) handleIngestEscalations(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// GlobalIncidentRequest reports a fleet-wide incident (build, deployment,
+// rollback, ...) directly to the store, without a component owning it. An
+// empty ID creates a new incident; a request with an ID annotates the
+// existing incident and can close it by setting status to "closed".
+type GlobalIncidentRequest struct {
+	Source   string            `json:"source,omitempty"`
+	ID       string            `json:"id,omitempty"`
+	Type     string            `json:"type,omitempty"`
+	Title    string            `json:"title,omitempty"`
+	Severity *statekit.Status  `json:"severity,omitempty"`
+	Status   string            `json:"status,omitempty"`
+	Message  string            `json:"message,omitempty"`
+	Labels   map[string]string `json:"labels,omitempty"`
+	Data     map[string]any    `json:"data,omitempty"`
+}
+
+const defaultGlobalIncidentSource = "global"
+
+func (a *API) handleGlobalIncident(w http.ResponseWriter, r *http.Request) {
+	var req GlobalIncidentRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	source := req.Source
+	if source == "" {
+		source = defaultGlobalIncidentSource
+	}
+	now := time.Now()
+	var incident statekit.EscalationIncident
+	created := req.ID == ""
+	if created {
+		if req.Type == "" {
+			http.Error(w, "missing type", http.StatusBadRequest)
+			return
+		}
+		incident = newGlobalIncident(req, now)
+	} else {
+		existing, err := a.findIncident(r, source, req.ID)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusNotFound)
+			return
+		}
+		source = existing.Source
+		incident, err = updatedGlobalIncident(existing, req, now)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+	}
+	doc := statekit.EscalationDisplayDocument{
+		Kind:      statekit.EscalationDisplayKind,
+		Incidents: []statekit.EscalationIncident{incident},
+	}
+	if err := a.store.IngestEscalations(r.Context(), source, doc, now); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	stored, err := a.findIncident(r, source, incident.ID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if created {
+		w.WriteHeader(http.StatusCreated)
+	}
+	writeJSON(w, stored, nil)
+}
+
+func newGlobalIncident(req GlobalIncidentRequest, now time.Time) statekit.EscalationIncident {
+	title := req.Title
+	if title == "" {
+		title = req.Type
+	}
+	var severity statekit.Status
+	if req.Severity != nil {
+		severity = *req.Severity
+	}
+	message := req.Message
+	if message == "" {
+		message = "started"
+	}
+	return statekit.EscalationIncident{
+		ID:            req.Type + "-" + strconv.FormatInt(now.UnixNano(), 10),
+		Type:          req.Type,
+		Title:         title,
+		Status:        statekit.EscalationOpen,
+		CreatedAt:     now,
+		LastUpdatedAt: now,
+		Severity:      severity,
+		Labels:        req.Labels,
+		Events:        []statekit.EscalationEvent{globalIncidentEvent(req.Type, message, req.Data, now)},
+	}
+}
+
+func updatedGlobalIncident(existing Incident, req GlobalIncidentRequest, now time.Time) (statekit.EscalationIncident, error) {
+	severity, err := statekit.ParseStatus(firstNonEmpty(existing.Severity, statekit.Pass.String()))
+	if err != nil {
+		return statekit.EscalationIncident{}, err
+	}
+	if req.Severity != nil {
+		severity = *req.Severity
+	}
+	incident := statekit.EscalationIncident{
+		ID:            existing.ID,
+		Type:          existing.Type,
+		Title:         firstNonEmpty(req.Title, existing.Title),
+		Status:        existing.Status,
+		CreatedAt:     existing.CreatedAt,
+		ExpiresAt:     existing.ExpiresAt,
+		LastUpdatedAt: now,
+		Severity:      severity,
+		Labels:        mergeStringLabels(existing.Labels, req.Labels),
+		Topics:        existing.Topics,
+	}
+	message := req.Message
+	switch req.Status {
+	case "":
+	case statekit.EscalationClosed:
+		incident.Status = statekit.EscalationClosed
+		if message == "" {
+			message = "closed"
+		}
+	default:
+		return statekit.EscalationIncident{}, fmt.Errorf("unsupported status %q", req.Status)
+	}
+	if message != "" || len(req.Data) > 0 {
+		incident.Events = []statekit.EscalationEvent{globalIncidentEvent(existing.Type, message, req.Data, now)}
+	}
+	return incident, nil
+}
+
+func globalIncidentEvent(topic, message string, data map[string]any, now time.Time) statekit.EscalationEvent {
+	return statekit.EscalationEvent{
+		Seq:       strconv.FormatInt(now.UnixNano(), 10),
+		Timestamp: now,
+		Topic:     topic,
+		Message:   message,
+		Data:      data,
+	}
+}
+
+func (a *API) findIncident(r *http.Request, source, id string) (Incident, error) {
+	items, err := a.store.Incidents(r.Context(), IncidentFilter{Source: source, ID: id})
+	if err != nil {
+		return Incident{}, err
+	}
+	if len(items) == 0 {
+		return Incident{}, fmt.Errorf("incident %q from source %q not found", id, source)
+	}
+	latest := items[0]
+	for _, item := range items[1:] {
+		if item.CreatedAt.After(latest.CreatedAt) {
+			latest = item
+		}
+	}
+	return latest, nil
 }
 
 func (a *API) handleAcknowledgeIncident(w http.ResponseWriter, r *http.Request) {

@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -265,6 +266,7 @@ func TestMemoryStoreIngestsEscalationsAndDedupesEvents(t *testing.T) {
 			ID:            "ID-0000000001",
 			ScrapedFrom:   "issuer-origin",
 			ScrapePath:    "regional-east > issuer-origin",
+			Type:          statekit.EscalationTypeRollback,
 			Title:         "checkout failed",
 			Status:        statekit.EscalationOpen,
 			CreatedAt:     observedAt,
@@ -301,6 +303,12 @@ func TestMemoryStoreIngestsEscalationsAndDedupesEvents(t *testing.T) {
 	if incident.Labels["component"] != "issuer" || incident.Labels["region"] != "use1" ||
 		incident.Labels["subsystem"] != "support" || incident.Topics["request_id"] != "req-1" {
 		t.Fatalf("incident metadata = labels %+v topics %+v", incident.Labels, incident.Topics)
+	}
+	if incident.Type != statekit.EscalationTypeRollback {
+		t.Fatalf("incident type = %q, want %q", incident.Type, statekit.EscalationTypeRollback)
+	}
+	if byType, err := store.Incidents(context.Background(), IncidentFilter{Type: statekit.EscalationTypeBuild}); err != nil || len(byType) != 0 {
+		t.Fatalf("type filter matched unexpectedly: %+v, err %v", byType, err)
 	}
 	if len(incident.Events) != 2 {
 		t.Fatalf("events len = %d, want 2: %+v", len(incident.Events), incident.Events)
@@ -538,5 +546,89 @@ func testDocument() statekit.StateDisplayDocument {
 				},
 			}},
 		}},
+	}
+}
+
+func TestAPIGlobalIncidentLifecycle(t *testing.T) {
+	store := NewMemoryStore()
+	server := httptest.NewServer(NewAPI(store).Handler())
+	defer server.Close()
+
+	post := func(body map[string]any) (int, Incident) {
+		t.Helper()
+		data, err := json.Marshal(body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp, err := http.Post(server.URL+"/escalations/global", "application/json", bytes.NewReader(data))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		var incident Incident
+		if resp.StatusCode < 300 {
+			if err := json.NewDecoder(resp.Body).Decode(&incident); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return resp.StatusCode, incident
+	}
+
+	code, created := post(map[string]any{
+		"type":    statekit.EscalationTypeDeployment,
+		"title":   "deploy v1.2.3",
+		"message": "rollout started",
+		"labels":  map[string]string{"version": "v1.2.3"},
+	})
+	if code != http.StatusCreated {
+		t.Fatalf("create status = %d, want %d", code, http.StatusCreated)
+	}
+	if created.Type != statekit.EscalationTypeDeployment || created.Status != statekit.EscalationOpen ||
+		created.Source != "global" || created.Title != "deploy v1.2.3" || created.Labels["version"] != "v1.2.3" {
+		t.Fatalf("created incident = %+v", created)
+	}
+	if len(created.Events) != 1 || created.Events[0].Message != "rollout started" {
+		t.Fatalf("created events = %+v", created.Events)
+	}
+
+	code, annotated := post(map[string]any{"id": created.ID, "message": "50% rolled out"})
+	if code != http.StatusOK || annotated.Status != statekit.EscalationOpen || len(annotated.Events) != 2 {
+		t.Fatalf("annotate status = %d, incident = %+v", code, annotated)
+	}
+
+	code, closed := post(map[string]any{"id": created.ID, "status": statekit.EscalationClosed})
+	if code != http.StatusOK || closed.Status != statekit.EscalationClosed || len(closed.Events) != 3 {
+		t.Fatalf("close status = %d, incident = %+v", code, closed)
+	}
+	if closed.Events[2].Message != "closed" || closed.CreatedAt != created.CreatedAt {
+		t.Fatalf("closed incident = %+v", closed)
+	}
+
+	if code, _ := post(map[string]any{"title": "missing type"}); code != http.StatusBadRequest {
+		t.Fatalf("missing type status = %d, want %d", code, http.StatusBadRequest)
+	}
+	if code, _ := post(map[string]any{"id": "missing", "status": statekit.EscalationClosed}); code != http.StatusNotFound {
+		t.Fatalf("unknown id status = %d, want %d", code, http.StatusNotFound)
+	}
+
+	req, err := http.NewRequest(http.MethodGet, server.URL+"/escalations/incidents?type=deployment", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Accept", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if got := resp.Header.Get("Content-Type"); got != "application/json" {
+		t.Fatalf("incidents content-type = %q, want application/json", got)
+	}
+	var listed []Incident
+	if err := json.NewDecoder(resp.Body).Decode(&listed); err != nil {
+		t.Fatal(err)
+	}
+	if len(listed) != 1 || listed[0].ID != created.ID {
+		t.Fatalf("listed incidents = %+v", listed)
 	}
 }

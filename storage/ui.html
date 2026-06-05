@@ -49,6 +49,24 @@
       <div class="systemTimelineViz" id="systemTimelineViz"></div>
     </section>
 
+    <section class="pane incidentsPane">
+      <div class="paneHeader">
+        <h2 id="incidentsTitle">Incidents</h2>
+        <div class="paneControls">
+          <span class="meta">component escalations and fleet ops</span>
+          <select id="incidentFilter" aria-label="Incident filter">
+            <option value="active">active</option>
+            <option value="">all</option>
+            <option value="open">open</option>
+            <option value="closed">closed</option>
+            <option value="acknowledged">acknowledged</option>
+            <option value="global">fleet ops</option>
+          </select>
+        </div>
+      </div>
+      <div class="incidentTable" id="incidents"></div>
+    </section>
+
     <section class="workspace">
       <div class="pane">
         <div class="paneHeader">

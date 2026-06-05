@@ -159,15 +159,52 @@ paths:
           in: query
           schema:
             type: string
+        - name: type
+          in: query
+          description: Incident type, for example build, deployment, or rollback.
+          schema:
+            type: string
       responses:
         '200':
-          description: Escalation incidents
+          description: Escalation incidents. YAML by default, JSON when the Accept header includes application/json.
           content:
             text/yaml:
               schema:
                 type: array
                 items:
                   $ref: '#/components/schemas/Incident'
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Incident'
+  /escalations/global:
+    post:
+      summary: Report a fleet-wide incident
+      description: >
+        Creates or updates a global incident such as a build, deployment, or
+        rollback, without a component owning it. Omit id to create a new
+        incident; include id (and optionally status closed) to annotate or
+        close an existing one.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GlobalIncidentRequest'
+      responses:
+        '200':
+          description: Updated incident
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Incident'
+        '201':
+          description: Created incident
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Incident'
   /escalations/ack:
     post:
       summary: Mark a stored escalation incident acknowledged
@@ -246,6 +283,9 @@ components:
           type: string
         scrape_path:
           type: string
+        type:
+          type: string
+          description: Incident type. Empty for a regular component incident; build, deployment, and rollback describe fleet-wide operations.
         title:
           type: string
         status:
@@ -550,6 +590,9 @@ components:
           type: string
         id:
           type: string
+        type:
+          type: string
+          description: Incident type. Empty for a regular component incident; build, deployment, and rollback describe fleet-wide operations.
         title:
           type: string
         status:
@@ -581,6 +624,38 @@ components:
         observed_at:
           type: string
           format: date-time
+    GlobalIncidentRequest:
+      type: object
+      properties:
+        source:
+          type: string
+          description: Reporting source. Defaults to "global".
+        id:
+          type: string
+          description: Existing incident ID to annotate or close. Omit to create.
+        type:
+          type: string
+          description: Incident type, for example build, deployment, or rollback. Required on create.
+        title:
+          type: string
+          description: Defaults to the type on create.
+        severity:
+          type: string
+          enum: [pass, warn, fail, down]
+        status:
+          type: string
+          description: Set to closed to close an existing incident.
+          enum: [closed]
+        message:
+          type: string
+          description: Event message recorded on the incident.
+        labels:
+          type: object
+          additionalProperties:
+            type: string
+        data:
+          type: object
+          additionalProperties: true
     IncidentEvent:
       type: object
       properties:

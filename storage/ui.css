@@ -97,6 +97,9 @@ button:hover { border-color: #1f6feb; }
 .targetTable .row { grid-template-columns: 64px minmax(120px, 1fr) minmax(112px, auto); }
 .stateTable { display: grid; gap: 10px; padding: 10px; }
 .eventTable .row { grid-template-columns: 132px 72px 1fr 1.2fr; }
+.incidentsPane { margin-bottom: 12px; }
+.incidentTable { max-height: 320px; overflow: auto; }
+.incidentTable .row { grid-template-columns: 104px 70px 110px minmax(180px, 1fr) minmax(110px, 0.6fr) 96px 96px 70px; }
 .row.clickable { cursor: pointer; }
 .row.clickable:hover { background: #f8fbff; }
 .row.selected { background: #eef6ff; }
@@ -266,6 +269,48 @@ button:hover { border-color: #1f6feb; }
   border-color: #aeb4be;
   color: #111827;
 }
+.vis-item.timeline-incident {
+  border-style: dashed;
+  border-width: 2px;
+}
+.vis-item.vis-background.timeline-global {
+  opacity: 0.85;
+}
+.vis-item.vis-background.timeline-global .vis-item-content {
+  position: sticky;
+  top: 0;
+  display: inline-block;
+  margin: 2px 0 0 2px;
+  border-radius: 4px;
+  padding: 1px 6px;
+  font-size: 11px;
+  font-weight: 760;
+  color: #fff;
+}
+.vis-item.vis-background.timeline-global-build { background: rgba(31, 111, 235, 0.10); border-left: 2px solid #1f6feb; }
+.vis-item.vis-background.timeline-global-build .vis-item-content { background: #1f6feb; }
+.vis-item.vis-background.timeline-global-deployment { background: rgba(124, 58, 237, 0.10); border-left: 2px solid #7c3aed; }
+.vis-item.vis-background.timeline-global-deployment .vis-item-content { background: #7c3aed; }
+.vis-item.vis-background.timeline-global-rollback { background: rgba(234, 88, 12, 0.12); border-left: 2px solid #ea580c; }
+.vis-item.vis-background.timeline-global-rollback .vis-item-content { background: #ea580c; }
+.typeChip {
+  display: inline-flex;
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: 12px;
+  font-weight: 760;
+  text-transform: uppercase;
+  background: #eef1f5;
+  color: #526070;
+}
+.typeChip.type-build { background: #dbeafe; color: #1d4ed8; }
+.typeChip.type-deployment { background: #ede9fe; color: #6d28d9; }
+.typeChip.type-rollback { background: #ffedd5; color: #c2410c; }
+.incidentStatus { font-size: 12px; font-weight: 720; text-transform: uppercase; color: #647082; }
+.incidentStatus.status-open { color: #9b1c16; }
+.incidentStatus.status-closed { color: #1f2937; }
+.incidentStatus.status-acknowledged { color: #14683a; }
+.ackButton { min-height: 28px; padding: 3px 10px; font-size: 12px; }
 .vis-item .vis-item-content {
   font-size: 12px;
   font-weight: 680;
@@ -278,6 +323,6 @@ button:hover { border-color: #1f6feb; }
   .actions { justify-content: start; margin-top: 10px; }
   .summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .pane { margin-bottom: 12px; }
-  .row, .targetTable .row, .eventTable .row, .checkRow { grid-template-columns: 1fr; }
+  .row, .targetTable .row, .eventTable .row, .incidentTable .row, .checkRow { grid-template-columns: 1fr; }
   .row.header { display: none; }
 }

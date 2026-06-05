@@ -7,7 +7,7 @@ STACKDEMO_FLAGS ?= -kill-url
 RUNCTL ?= go run github.com/gur-shatz/go-run/cmd/runctl@latest
 RUNCTL_FLAGS ?= -ui
 
-.PHONY: help fmt test runctl demo demo-component demo-scraper demo-fleet demo-http-checks demo-stack demo-urls
+.PHONY: help fmt test runctl demo demo-component demo-scraper demo-fleet demo-http-checks demo-stack stackdemo demo-urls
 
 help:
 	@echo "statekit targets:"
@@ -20,6 +20,8 @@ help:
 	@echo "  make demo-http-checks Run the interactive HTTP checks demo under runctl"
 	@echo "  make demo-stack      Run stackdemo under runctl"
 	@echo "                       (STACKDEMO_FLAGS=$(STACKDEMO_FLAGS))"
+	@echo "  make stackdemo       Run stackdemo directly with go run"
+	@echo "                       (STACKDEMO_PORT=$(STACKDEMO_PORT), STACKDEMO_FLAGS=$(STACKDEMO_FLAGS))"
 	@echo "  make demo            Alias for demo-fleet"
 	@echo "  make demo-urls       Print URLs for the running demos"
 	@echo ""
@@ -58,6 +60,9 @@ demo-http-checks:
 demo-stack:
 	cd examples/stackdemo && PORT=$(STACKDEMO_PORT) FLAGS="$(STACKDEMO_FLAGS)" $(RUNCTL) $(RUNCTL_FLAGS) -config runctl.yaml
 
+stackdemo:
+	go run ./examples/stackdemo -addr=:$(STACKDEMO_PORT) $(STACKDEMO_FLAGS)
+
 demo-urls:
 	@echo "componentdemo:"
 	@echo "  runctl UI:      http://localhost:19180/"
@@ -89,4 +94,6 @@ demo-urls:
 	@echo "  UI:             http://localhost:$(STACKDEMO_PORT)/"
 	@echo "  Fleet state:    http://localhost:$(STACKDEMO_PORT)/fleet/state"
 	@echo "  Storage groups: http://localhost:$(STACKDEMO_PORT)/api/state/groups?by=group_name"
+	@echo "  Storage UI:     http://localhost:$(STACKDEMO_PORT)/storage/"
+	@echo "  Incidents:      http://localhost:$(STACKDEMO_PORT)/api/escalations/incidents"
 	@echo "  Kill URL:       http://localhost:$(STACKDEMO_PORT)/-/quit"
