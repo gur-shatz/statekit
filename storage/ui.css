@@ -98,7 +98,7 @@ button:hover { border-color: #1f6feb; }
 .stateTable { display: grid; gap: 10px; padding: 10px; }
 .eventTable .row { grid-template-columns: 132px 72px 1fr 1.2fr; }
 .incidentsPane { margin-bottom: 12px; }
-.incidentTable { max-height: 320px; overflow: auto; }
+.incidentTable { max-height: clamp(180px, 24vh, 240px); overflow: auto; }
 .incidentTable .row { grid-template-columns: 104px 70px 110px minmax(180px, 1fr) minmax(110px, 0.6fr) 96px 96px 70px; }
 .row.clickable { cursor: pointer; }
 .row.clickable:hover { background: #f8fbff; }

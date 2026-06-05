@@ -586,8 +586,29 @@ function cssToken(value) {
 
 function incidentSpan(incident, now) {
   const start = incident.created_at;
-  const end = incident.status === "open" ? now : (incident.last_updated_at || incident.created_at);
+  const end = incident.status === "closed" ? (incident.last_updated_at || incident.created_at) : now;
   return { start, end };
+}
+
+function latestIncidentEvent(incident) {
+  const events = incident.events || [];
+  return events.length ? events[events.length - 1] : null;
+}
+
+function incidentTooltip(incident, span) {
+  const typeName = incidentTypeName(incident);
+  const latest = latestIncidentEvent(incident);
+  const lines = [
+    `${typeName}: ${incident.title}`,
+    `Status: ${incident.status || "unknown"}`,
+    `Source: ${incident.source || "unknown"}`,
+    `Started: ${formatDateTime(span.start)}`,
+    `Updated: ${formatDateTime(incident.last_updated_at)}`,
+  ];
+  if (latest) {
+    lines.push(`Latest event: ${[latest.topic, latest.message].filter(Boolean).join(" - ")}`);
+  }
+  return lines.filter(Boolean).join("\n");
 }
 
 function incidentTimelineItems(rangeStart, now) {
@@ -598,12 +619,10 @@ function incidentTimelineItems(rangeStart, now) {
       const typeName = incidentTypeName(incident);
       const global = isGlobalIncident(incident);
       const label = `${typeName}: ${incident.title}`;
-      const tooltip = [typeName, incident.title, incident.status, incident.source]
-        .filter(Boolean).join(" · ");
       return {
         id: `incident-${incident.identity}`,
         content: esc(label),
-        title: esc(tooltip),
+        title: esc(incidentTooltip(incident, span)),
         start: span.start,
         end: span.end,
         type: global ? "background" : "range",
@@ -617,7 +636,7 @@ function incidentTimelineItems(rangeStart, now) {
 function filteredIncidents() {
   const filter = state.incidentFilter;
   return state.incidents.filter((incident) => {
-    if (filter === "active") return incident.status !== "acknowledged";
+    if (filter === "active") return incident.status !== "closed";
     if (filter === "global") return isGlobalIncident(incident);
     if (!filter) return true;
     return incident.status === filter;
@@ -668,6 +687,13 @@ function formatTime(value) {
   const d = new Date(value);
   if (Number.isNaN(d.getTime())) return value;
   return d.toLocaleTimeString();
+}
+
+function formatDateTime(value) {
+  if (!value) return "";
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return value;
+  return d.toLocaleString();
 }
 
 function formatAge(value) {
