@@ -37,3 +37,14 @@ The embedded browser console can be mounted beside that API:
 http.Handle("/storage/", http.StripPrefix("/storage",
     storage.UIHandler(storage.UIOptions{APIBase: "/api"})))
 ```
+
+For a smaller operations-oriented overview of mounted statekit endpoints,
+registry configuration, and storage counts, mount the `infopages` package:
+
+```go
+http.Handle("/info/", http.StripPrefix("/info", infopages.Handler(infopages.Options{
+    Registry: reg,
+    Storage:  store,
+    APIURL:   "/api",
+})))
+```

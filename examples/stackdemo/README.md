@@ -43,6 +43,7 @@ Useful endpoints:
 /api/escalations/incidents
 /api/openapi.yaml
 /storage/                     storage console
+/info/                        mounted info pages for fleet config and storage
 /-/quit                       stop the process when -kill-url is enabled
 ```
 

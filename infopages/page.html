@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ .Title }} info</title>
+  <link rel="stylesheet" href="ui.css">
+</head>
+<body>
+  <header>
+    <div>
+      <h1>{{ .Title }}</h1>
+      <p>Generated {{ .GeneratedAt.Format "2006-01-02 15:04:05 MST" }}</p>
+    </div>
+    <nav>
+      <a {{ if eq .Active "overview" }}class="active"{{ end }} href=".">Overview</a>
+      <a {{ if eq .Active "config" }}class="active"{{ end }} href="config">Config</a>
+      <a {{ if eq .Active "storage" }}class="active"{{ end }} href="storage">Storage</a>
+    </nav>
+  </header>
+
+  <main>
+    {{ if eq .Active "overview" }}
+      <section>
+        <h2>Mounted Surfaces</h2>
+        <div class="summary">
+          <div><strong>{{ if .Registry }}available{{ else }}not mounted{{ end }}</strong><span>Registry</span></div>
+          <div><strong>{{ if .Storage }}available{{ else }}not mounted{{ end }}</strong><span>Storage</span></div>
+          <div><strong>{{ if .APIURL }}{{ .APIURL }}{{ else }}/api{{ end }}</strong><span>Storage API base</span></div>
+        </div>
+      </section>
+      {{ if .Registry }}
+        <section>
+          <h2>Registry Endpoints</h2>
+          {{ template "endpoints" .Registry.Endpoints }}
+        </section>
+      {{ end }}
+      {{ if .Storage }}
+        <section>
+          <h2>Storage Endpoints</h2>
+          {{ template "endpoints" .Storage.EndpointRows }}
+        </section>
+      {{ end }}
+    {{ end }}
+
+    {{ if eq .Active "config" }}
+      {{ if .Registry }}
+        <section>
+          <h2>Registry Configuration</h2>
+          <div class="summary">
+            <div><strong>{{ or .Registry.Info.Version "unset" }}</strong><span>Version</span></div>
+            <div><strong>{{ .Registry.Info.StateCount }}</strong><span>Registered states</span></div>
+            <div><strong>{{ .Registry.Info.CollectorCount }}</strong><span>Collectors</span></div>
+            <div><strong>{{ .Registry.Info.MetricCount }}</strong><span>Metric descriptors</span></div>
+          </div>
+        </section>
+        <section>
+          <h2>Registry Endpoints</h2>
+          {{ template "endpoints" .Registry.Endpoints }}
+        </section>
+        <section>
+          <h2>Labels</h2>
+          {{ if .Registry.LabelRows }}
+            <table>
+              <thead><tr><th>Name</th><th>Value</th></tr></thead>
+              <tbody>{{ range .Registry.LabelRows }}<tr><td>{{ .Key }}</td><td>{{ .Value }}</td></tr>{{ end }}</tbody>
+            </table>
+          {{ else }}
+            <p class="empty">No registry labels configured.</p>
+          {{ end }}
+        </section>
+        <section>
+          <h2>Current States</h2>
+          <table>
+            <thead><tr><th>Name</th><th>Status</th><th>Importance</th><th>Reason</th></tr></thead>
+            <tbody>{{ range .Registry.StateRows }}<tr><td>{{ .Name }}</td><td><span class="status {{ .Status }}">{{ .Status }}</span></td><td>{{ .Importance }}</td><td>{{ .Reason }}</td></tr>{{ end }}</tbody>
+          </table>
+        </section>
+        <section>
+          <h2>Metrics</h2>
+          <table>
+            <thead><tr><th>Name</th><th>Type</th><th>Help</th></tr></thead>
+            <tbody>{{ range .Registry.MetricRows }}<tr><td>{{ .Name }}</td><td>{{ .Type }}</td><td>{{ .Help }}</td></tr>{{ end }}</tbody>
+          </table>
+        </section>
+      {{ else }}
+        <section><p class="empty">No registry was supplied to this info handler.</p></section>
+      {{ end }}
+    {{ end }}
+
+    {{ if eq .Active "storage" }}
+      {{ if .Storage }}
+        <section>
+          <h2>Storage</h2>
+          <div class="summary">
+            <div><strong>{{ .Storage.Type }}</strong><span>Store type</span></div>
+            <div><strong>{{ .Storage.CurrentCount }}</strong><span>Current states</span></div>
+            <div><strong>{{ .Storage.TargetCount }}</strong><span>Targets</span></div>
+            <div><strong>{{ .Storage.EventCount }}</strong><span>Events</span></div>
+            <div><strong>{{ .Storage.IncidentCount }}</strong><span>Incidents</span></div>
+            <div><strong>{{ .Storage.LastObservedText }}</strong><span>Last observed</span></div>
+          </div>
+        </section>
+        <section>
+          <h2>Status Counts</h2>
+          <div class="summary">
+            <div><strong>{{ index .Storage.StatusCounts "pass" }}</strong><span>Pass</span></div>
+            <div><strong>{{ index .Storage.StatusCounts "warn" }}</strong><span>Warn</span></div>
+            <div><strong>{{ index .Storage.StatusCounts "fail" }}</strong><span>Fail</span></div>
+            <div><strong>{{ index .Storage.StatusCounts "down" }}</strong><span>Down</span></div>
+          </div>
+        </section>
+        <section>
+          <h2>Storage Endpoints</h2>
+          {{ template "endpoints" .Storage.EndpointRows }}
+        </section>
+      {{ else }}
+        <section><p class="empty">No store was supplied to this info handler.</p></section>
+      {{ end }}
+    {{ end }}
+  </main>
+</body>
+</html>
+
+{{ define "endpoints" }}
+<table>
+  <thead><tr><th>Path</th><th>Description</th></tr></thead>
+  <tbody>{{ range . }}<tr><td><a href="{{ .Path }}">{{ .Path }}</a></td><td>{{ .Description }}</td></tr>{{ end }}</tbody>
+</table>
+{{ end }}

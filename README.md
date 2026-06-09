@@ -540,3 +540,27 @@ document (YAML) at `/state`, plain health status at `/health`, and
 Prometheus text at `/metrics`.
 
 Set `PORT=29080` or another value if port 19080 is already in use.
+
+## Info pages
+
+Applications can mount small browser-readable info pages beside their statekit
+endpoints:
+
+```go
+reg := statekit.NewRegistry(statekit.WithLabel("component", "issuer"))
+store := storage.NewMemoryStore()
+
+mux := http.NewServeMux()
+reg.Mount(mux, "/statekit")
+mux.Handle("/api/", http.StripPrefix("/api", storage.NewAPI(store).Handler()))
+mux.Handle("/info/", http.StripPrefix("/info", infopages.Handler(infopages.Options{
+    Title:       "issuer",
+    Registry:    reg,
+    Storage:     store,
+    RegistryURL: "/statekit",
+    APIURL:      "/api",
+})))
+```
+
+The mounted pages include an overview, current registry configuration, exposed
+state/metric endpoints, and storage counts.

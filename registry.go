@@ -3,6 +3,7 @@ package statekit
 import (
 	"fmt"
 	"slices"
+	"strings"
 	"sync"
 )
 
@@ -16,6 +17,17 @@ type Registry struct {
 	descs       map[string]PrometheusDesc
 	health      *healthState
 	escalations EscalationSource
+}
+
+type RegistryInfo struct {
+	Version         string            `json:"version,omitempty"`
+	Labels          map[string]string `json:"labels,omitempty"`
+	LabelOrder      []string          `json:"label_order,omitempty"`
+	StateCount      int               `json:"state_count"`
+	CollectorCount  int               `json:"collector_count"`
+	MetricCount     int               `json:"metric_count"`
+	HasEscalations  bool              `json:"has_escalations"`
+	PrometheusDescs []PrometheusDesc  `json:"prometheus_descs,omitempty"`
 }
 
 type RegistryOption func(*Registry)
@@ -120,6 +132,33 @@ func (r *Registry) Version() string {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return r.version
+}
+
+func (r *Registry) Info() RegistryInfo {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	labels := make(map[string]string, len(r.labels))
+	for name, value := range r.labels {
+		labels[name] = value
+	}
+	descs := make([]PrometheusDesc, 0, len(r.descs))
+	for _, desc := range r.descs {
+		descs = append(descs, desc)
+	}
+	slices.SortFunc(descs, func(a, b PrometheusDesc) int {
+		return strings.Compare(a.Name, b.Name)
+	})
+	return RegistryInfo{
+		Version:         r.version,
+		Labels:          labels,
+		LabelOrder:      append([]string(nil), r.labelOrder...),
+		StateCount:      len(r.states),
+		CollectorCount:  len(r.collectors),
+		MetricCount:     len(r.descs),
+		HasEscalations:  r.escalations != nil,
+		PrometheusDescs: descs,
+	}
 }
 
 func (r *Registry) rememberDesc(desc PrometheusDesc) error {
