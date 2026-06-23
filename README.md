@@ -209,8 +209,12 @@ app.AddInformationalCheck(cache)
 
 `AddInformationalCheck` caps a child's contribution at `warn` even if the child
 itself reports `fail` or `down`. Use it for optional subsystems whose
-failure should not take the whole component down. The same cap can be
-attached to the state directly:
+failure should not take the whole component down.
+
+Marking the state itself as informational goes further: an informational state
+is limited to `pass` or `warn` and can never report `fail` or `down`. The cap is
+applied to its own status, so it shows as `warn` everywhere it appears, not just
+inside an aggregate:
 
 ```go
 cache := statekit.NewManualState("cache", statekit.WithImportance(statekit.Informational))
@@ -356,7 +360,7 @@ can merge many component documents by `label_path`.
 
 Every registry also maintains a synthetic `health` state. It is always
 the first state in the document, with status equal to the worst of all
-registered states (Informational children capped at warn), data carrying
+registered states (informational states cap themselves at warn), data carrying
 the count distribution per status, and reason grouping the non-pass
 states like `fail:db,xx warn:zzz`.
 

@@ -9,9 +9,10 @@ import (
 )
 
 // healthState is the synthetic state automatically maintained by Registry.
-// Its status is the worst of all registered states (Informational children
-// are capped at Warn, matching aggregate semantics). Its data carries the
-// distribution of statuses; its reason groups non-pass states by status.
+// Its status is the worst of all registered states. Informational states
+// already limit themselves to pass or warn (see stateTracker.set), so no
+// extra capping is applied here. Its data carries the distribution of
+// statuses; its reason groups non-pass states by status.
 //
 // healthState is not added to Registry.states. Registry.Snapshot evaluates
 // it from the snapshots of every other registered state and prepends it to
@@ -75,10 +76,9 @@ func evaluateHealth(snaps []Snapshot) (Status, string, map[string]any) {
 	byStatus := map[Status][]string{}
 	worst := Pass
 	for _, snap := range snaps {
+		// Informational states already cap their own status at warn (see
+		// stateTracker.set), so the reported status is used as-is.
 		contribution := snap.Status
-		if snap.Importance == Informational && contribution > Warn {
-			contribution = Warn
-		}
 		counts[contribution]++
 		if contribution > Pass {
 			byStatus[contribution] = append(byStatus[contribution], snap.Name)

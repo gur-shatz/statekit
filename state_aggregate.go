@@ -144,10 +144,9 @@ func (s *AggregateState) Snapshot() Snapshot {
 }
 
 func aggregateContribution(s Snapshot, worstStatus Status) Status {
+	// Informational states already cap their own status at warn (see
+	// stateTracker.set), so only the per-check worst status is applied here.
 	contribution := s.Status
-	if s.Importance == Informational && contribution > Warn {
-		contribution = Warn
-	}
 	if contribution > worstStatus {
 		contribution = worstStatus
 	}

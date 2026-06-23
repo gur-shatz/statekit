@@ -37,6 +37,11 @@ func newStateTracker(name string, importance Importance, help string, now clock)
 }
 
 func (t *stateTracker) set(status Status, reason string, data map[string]any) {
+	// Informational states are limited to pass or warn: a problem in an
+	// optional subsystem is worth noting but must never report fail or down.
+	if t.importance == Informational && status > Warn {
+		status = Warn
+	}
 	now := t.now()
 	t.updatedAt = now
 	if status == t.status && len(t.history) > 0 {

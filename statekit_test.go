@@ -136,6 +136,41 @@ func TestManualStatePreservesReasonForPass(t *testing.T) {
 	}
 }
 
+func TestInformationalStateCapsItsOwnStatusAtWarn(t *testing.T) {
+	s := NewManualState("optional", WithImportance(Informational))
+
+	// fail and down are both limited to warn on the state itself.
+	s.Fail("upstream failing", nil)
+	if snap := s.Snapshot(); snap.Status != Warn {
+		t.Fatalf("informational fail status = %v, want warn", snap.Status)
+	}
+	s.Down("upstream unreachable", nil)
+	snap := s.Snapshot()
+	if snap.Status != Warn {
+		t.Fatalf("informational down status = %v, want warn", snap.Status)
+	}
+	// The reason is preserved even though the status is capped.
+	if snap.Reason != "upstream unreachable" {
+		t.Fatalf("reason = %q, want %q", snap.Reason, "upstream unreachable")
+	}
+	// History records the capped status, not the raw fail/down.
+	for _, entry := range snap.History {
+		if entry.Status > Warn {
+			t.Fatalf("history entry status = %v, want pass or warn", entry.Status)
+		}
+	}
+
+	// pass and warn still pass through unchanged.
+	s.Pass("recovered", nil)
+	if snap := s.Snapshot(); snap.Status != Pass {
+		t.Fatalf("informational pass status = %v, want pass", snap.Status)
+	}
+	s.Warn("degraded", nil)
+	if snap := s.Snapshot(); snap.Status != Warn {
+		t.Fatalf("informational warn status = %v, want warn", snap.Status)
+	}
+}
+
 func TestManualStateUpdatesCurrentReasonAndDataWithoutHistoryForSameStatus(t *testing.T) {
 	now := time.Date(2026, 5, 15, 12, 0, 0, 0, time.UTC)
 	s := NewManualState("database", WithClock(func() time.Time { return now }))
