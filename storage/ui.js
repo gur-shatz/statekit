@@ -273,7 +273,7 @@ function stateCard(target, item) {
   const reason = obs.reason ? `<div class="reason truncate">${esc(obs.reason)}</div>` : "";
   const labels = stateLabels(item);
   const data = stateData(item);
-  return `<article class="stateCard">
+  return `<article class="stateCard clickable" data-identity="${esc(item.identity)}">
     <div class="stateCardTop">
       <span class="pill ${esc(obs.status)}">${esc(obs.status)}</span>
       <div class="stateCardTitle">
@@ -333,7 +333,7 @@ function formatDataValue(value) {
 
 function checkRow(item) {
   const obs = item.observation || {};
-  return `<div class="checkRow">
+  return `<div class="checkRow clickable" data-identity="${esc(item.identity)}">
     <div><span class="pill ${esc(obs.status)}">${esc(obs.status)}</span></div>
     <div class="truncate">${esc(item.name)}</div>
     <div class="truncate">${esc(obs.reason || "")}</div>
@@ -714,6 +714,99 @@ function secondsSince(value) {
   return Math.max(0, Math.floor((Date.now() - timestamp) / 1000));
 }
 
+function currentRecord(identity) {
+  return state.current.find((item) => item.identity === identity) || null;
+}
+
+function yamlScalar(value) {
+  if (value === null || value === undefined) return "null";
+  if (typeof value === "boolean") return value ? "true" : "false";
+  if (typeof value === "number") return Number.isFinite(value) ? String(value) : JSON.stringify(String(value));
+  const str = String(value);
+  if (str === "") return '""';
+  if (/[\n"]/.test(str)) return JSON.stringify(str);
+  if (/^[\s]|[\s]$|^[-?:,[\]{}#&*!|>'"%@`]|[:#]\s|^(?:true|false|null|yes|no|on|off|~)$|^[-+]?\d/i.test(str)) {
+    return JSON.stringify(str);
+  }
+  return str;
+}
+
+function yamlKey(key) {
+  return /^[A-Za-z0-9_.-]+$/.test(key) ? key : JSON.stringify(key);
+}
+
+function isEmptyContainer(value) {
+  return Array.isArray(value) ? value.length === 0 : Object.keys(value).length === 0;
+}
+
+// toYAML renders a plain JSON value as a YAML document fragment indented under
+// the given level. Strings that could be misread as YAML are quoted.
+function toYAML(value, indent = 0) {
+  const pad = "  ".repeat(indent);
+  if (value === null || typeof value !== "object") return yamlScalar(value);
+
+  if (Array.isArray(value)) {
+    if (!value.length) return "[]";
+    return value.map((item) => {
+      if (item !== null && typeof item === "object" && !isEmptyContainer(item)) {
+        const lines = toYAML(item, indent + 1).split("\n");
+        const head = lines[0].slice((indent + 1) * 2);
+        const rest = lines.slice(1).join("\n");
+        return `${pad}- ${head}${rest ? `\n${rest}` : ""}`;
+      }
+      return `${pad}- ${toYAML(item, 0)}`;
+    }).join("\n");
+  }
+
+  const keys = Object.keys(value);
+  if (!keys.length) return "{}";
+  return keys.map((key) => {
+    const child = value[key];
+    if (child !== null && typeof child === "object" && !isEmptyContainer(child)) {
+      return `${pad}${yamlKey(key)}:\n${toYAML(child, indent + 1)}`;
+    }
+    if (child !== null && typeof child === "object") {
+      return `${pad}${yamlKey(key)}: ${Array.isArray(child) ? "[]" : "{}"}`;
+    }
+    return `${pad}${yamlKey(key)}: ${yamlScalar(child)}`;
+  }).join("\n");
+}
+
+let drawerYaml = "";
+
+function openStateDrawer(identity) {
+  const record = currentRecord(identity);
+  $("stateDrawerTitle").textContent = record?.name || identity;
+  $("stateDrawerSub").textContent = record?.identity || identity;
+  if (record) {
+    const { observation, ...metadata } = record;
+    $("stateDrawerObservation").textContent = observation ? toYAML(observation) : "# no observation recorded";
+    $("stateDrawerMetadata").textContent = toYAML(metadata);
+    drawerYaml = toYAML(record);
+  } else {
+    $("stateDrawerObservation").textContent = `# state ${identity} not found`;
+    $("stateDrawerMetadata").textContent = "";
+    drawerYaml = "";
+  }
+  $("stateDrawerMeta").open = false;
+  $("stateDrawerCopy").textContent = "Copy";
+  const drawer = $("stateDrawer");
+  drawer.classList.add("open");
+  drawer.setAttribute("aria-hidden", "false");
+}
+
+function closeStateDrawer() {
+  const drawer = $("stateDrawer");
+  drawer.classList.remove("open");
+  drawer.setAttribute("aria-hidden", "true");
+}
+
+async function copyStateYaml() {
+  if (!navigator.clipboard || !drawerYaml) return;
+  await navigator.clipboard.writeText(drawerYaml);
+  $("stateDrawerCopy").textContent = "Copied";
+}
+
 function showError(err) {
   $("lastRefresh").textContent = err.message;
 }
@@ -735,6 +828,17 @@ $("timelineWindow").addEventListener("change", (e) => {
   renderSystemTimeline();
 });
 $("refresh").addEventListener("click", () => refresh().catch(showError));
+
+$("states").addEventListener("click", (e) => {
+  const target = e.target.closest("[data-identity]");
+  if (target) openStateDrawer(target.dataset.identity);
+});
+$("stateDrawerClose").addEventListener("click", closeStateDrawer);
+$("stateDrawerBackdrop").addEventListener("click", closeStateDrawer);
+$("stateDrawerCopy").addEventListener("click", () => copyStateYaml().catch(showError));
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") closeStateDrawer();
+});
 
 refresh().catch(showError);
 setInterval(() => refresh().catch(showError), 5000);

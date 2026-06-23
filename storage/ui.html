@@ -79,7 +79,7 @@
       <div class="pane">
         <div class="paneHeader">
           <h2 id="statesTitle">States</h2>
-          <span class="meta">current state list</span>
+          <span class="meta">click a state for full YAML</span>
         </div>
         <div class="stateTable" id="states"></div>
       </div>
@@ -93,6 +93,33 @@
       </div>
     </section>
   </main>
+
+  <div class="drawer" id="stateDrawer" aria-hidden="true">
+    <div class="drawerBackdrop" id="stateDrawerBackdrop"></div>
+    <aside class="drawerPanel" role="dialog" aria-modal="true" aria-labelledby="stateDrawerTitle">
+      <div class="drawerHeader">
+        <div class="drawerHeading">
+          <h2 id="stateDrawerTitle">State</h2>
+          <div class="subtle truncate" id="stateDrawerSub"></div>
+        </div>
+        <div class="drawerActions">
+          <button type="button" id="stateDrawerCopy">Copy</button>
+          <button type="button" id="stateDrawerClose" aria-label="Close drawer">Close</button>
+        </div>
+      </div>
+      <div class="drawerBody">
+        <section class="drawerSection">
+          <div class="drawerSectionTitle">Observation</div>
+          <pre class="drawerYaml" id="stateDrawerObservation"></pre>
+        </section>
+        <details class="drawerMeta" id="stateDrawerMeta">
+          <summary>Metadata</summary>
+          <pre class="drawerYaml" id="stateDrawerMetadata"></pre>
+        </details>
+      </div>
+    </aside>
+  </div>
+
   <script>
     window.STATEKIT_API_BASE = "{{.APIBase}}";
   </script>
