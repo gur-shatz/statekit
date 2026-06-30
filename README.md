@@ -155,6 +155,34 @@ memoryGrowth := collectors.NewRuntimeIncreasingTrendCheck(
 )
 ```
 
+For a process-level memory view, `MemoryMetrics` reports both Go runtime memory
+and OS process memory where the platform exposes it. `NewMemoryTracker` returns
+the metrics collector plus a state initialized with warn and fail byte
+thresholds:
+
+```go
+memory := collectors.NewMemoryTracker("memory usage", 512*1024*1024, 1024*1024*1024)
+
+reg.Register(memory.State)
+reg.RegisterCollectors(memory.Metrics)
+```
+
+The state checks current OS RSS when available, then falls back to Go runtime
+memory obtained from the OS. The metrics include Go heap/sys details and OS RSS
+or peak RSS samples when available.
+
+To capture a heap profile when memory crosses into warn or fail, pass a profile
+directory:
+
+```go
+memory := collectors.NewMemoryTracker(
+	"memory usage",
+	512*1024*1024,
+	1024*1024*1024,
+	collectors.WithMemoryHeapProfileDir("/var/log/my-service/profiles"),
+)
+```
+
 ## State
 
 A `State` is anything that implements the small interface:
