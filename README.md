@@ -81,10 +81,10 @@ http.ListenAndServe(":8080", httpMetrics.Middleware(mux))
 - `httpMetrics.ErrorURLs()`
 - `httpMetrics.UnknownURLs()`
 
-These local measurements are evaluated over a rolling window. The default is
-five minutes; override it with `collectors.WithHTTPMetricsWindow`. Viewing a
-state does not advance or reset the window. Snapshots are cached for one second
-by default so frequent local reads stay cheap; use
+These local measurements are evaluated over an epoch-weighted estimated window.
+The default is five minutes; override it with `collectors.WithHTTPMetricsWindow`.
+Viewing a state does not advance or reset cumulative totals. Snapshots are
+cached for one second by default so frequent local reads stay cheap; use
 `collectors.WithHTTPMetricsSnapshotRefresh` to change that interval.
 
 Because the measurements are local, application behavior can use them directly:

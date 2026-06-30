@@ -3,6 +3,7 @@ package collectors
 import (
 	"fmt"
 	"maps"
+	"sort"
 	"time"
 
 	"github.com/gur-shatz/statekit"
@@ -61,12 +62,16 @@ func NewHTTPAverageLatencyCheck(metrics *HTTPMetrics, name string, warnAt, failA
 		if !ok {
 			return missingHTTPMetricsState()
 		}
-		data := map[string]any{"average_latency_seconds": snap.AverageLatency.Seconds()}
-		status, threshold := durationThresholdStatus(snap.AverageLatency, warnAt, failAt, downAt)
+		averageLatency := snap.Paths[httpMetricsGlobalPath].AverageLatency
+		data := map[string]any{
+			"average_latency_seconds": averageLatency.Seconds(),
+			"slow_paths":              slowHTTPPaths(snap, 5),
+		}
+		status, threshold := durationThresholdStatus(averageLatency, warnAt, failAt, downAt)
 		if snap.Requests == 0 || status == statekit.Pass {
 			return httpCheckState(snap, statekit.Pass, "", data)
 		}
-		return httpCheckState(snap, status, fmt.Sprintf("average latency %dms above %s threshold %dms", snap.AverageLatency.Milliseconds(), status, threshold.Milliseconds()), data)
+		return httpCheckState(snap, status, fmt.Sprintf("average latency %dms above %s threshold %dms", averageLatency.Milliseconds(), status, threshold.Milliseconds()), data)
 	})
 }
 
@@ -174,8 +179,49 @@ func httpMetricsData(snap HTTPMetricsSnapshot) map[string]any {
 		"errors_per_second":   snap.ErrorsPerSecond,
 		"error_ratio":         snap.ErrorRatio(),
 		"error_percentage":    snap.ErrorPercentage(),
-		"average_latency_ms":  snap.AverageLatency.Milliseconds(),
+		"average_latency_ms":  snap.Paths[httpMetricsGlobalPath].AverageLatency.Milliseconds(),
 	}
+}
+
+func slowHTTPPaths(snap HTTPMetricsSnapshot, limit int) []map[string]any {
+	if limit <= 0 {
+		return nil
+	}
+
+	paths := make([]string, 0, len(snap.Paths))
+	for path, pathSnap := range snap.Paths {
+		if path == httpMetricsGlobalPath || pathSnap.Requests == 0 {
+			continue
+		}
+		paths = append(paths, path)
+	}
+	sort.Slice(paths, func(i, j int) bool {
+		left := snap.Paths[paths[i]]
+		right := snap.Paths[paths[j]]
+		if left.AverageLatency != right.AverageLatency {
+			return left.AverageLatency > right.AverageLatency
+		}
+		if left.Requests != right.Requests {
+			return left.Requests > right.Requests
+		}
+		return paths[i] < paths[j]
+	})
+	if len(paths) > limit {
+		paths = paths[:limit]
+	}
+
+	out := make([]map[string]any, 0, len(paths))
+	for _, path := range paths {
+		pathSnap := snap.Paths[path]
+		out = append(out, map[string]any{
+			"path":                 path,
+			"requests":             pathSnap.Requests,
+			"errors":               pathSnap.Errors,
+			"average_latency_ms":   pathSnap.AverageLatency.Milliseconds(),
+			"average_latency_secs": pathSnap.AverageLatency.Seconds(),
+		})
+	}
+	return out
 }
 
 func uintThresholdStatus(value, warnAt, failAt, downAt uint64) (statekit.Status, uint64) {

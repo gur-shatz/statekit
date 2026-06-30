@@ -84,6 +84,35 @@ func TestHTTPMetricsExposeCurrentDistributions(t *testing.T) {
 	}
 }
 
+func TestHTTPMetricsExposePathMeasurements(t *testing.T) {
+	now := time.Date(2026, 5, 17, 12, 0, 0, 0, time.UTC)
+	metrics := NewHTTPMetrics(
+		WithHTTPMetricsWindow(time.Minute),
+		WithHTTPMetricsSnapshotRefresh(0),
+		withHTTPMetricsClock(func() time.Time { return now }),
+	)
+
+	metrics.observe("/fast", http.StatusNoContent, 10*time.Millisecond)
+	metrics.observe("/slow", http.StatusInternalServerError, 100*time.Millisecond)
+
+	snap := metrics.Snapshot()
+	if got, want := snap.Paths["-"].Requests, uint64(2); got != want {
+		t.Fatalf("aggregate requests = %d, want %d", got, want)
+	}
+	if got, want := snap.Paths["-"].Errors, uint64(1); got != want {
+		t.Fatalf("aggregate errors = %d, want %d", got, want)
+	}
+	if got, want := snap.Paths["/slow"].AverageLatency, 100*time.Millisecond; got != want {
+		t.Fatalf("/slow latency = %s, want %s", got, want)
+	}
+	if got, want := snap.Paths["/fast"].AverageLatency, 10*time.Millisecond; got != want {
+		t.Fatalf("/fast latency = %s, want %s", got, want)
+	}
+	if got, want := snap.Paths["/slow"].ResponseCodes[http.StatusInternalServerError], uint64(1); got != want {
+		t.Fatalf("/slow 500s = %d, want %d", got, want)
+	}
+}
+
 func TestHTTPMetricsPrometheusExportsGlobalMeasurements(t *testing.T) {
 	reg := statekit.NewRegistry()
 	metrics := NewHTTPMetrics()
@@ -109,20 +138,22 @@ func TestHTTPMetricsPrometheusExportsGlobalMeasurements(t *testing.T) {
 	for _, want := range []string{
 		"# TYPE http_server_requests_total counter",
 		"# TYPE http_server_errors_total counter",
-		"# HELP http_server_requests_per_second HTTP requests per second over the current 5m0s rolling window.",
+		"# HELP http_server_requests_per_second HTTP requests per second by path over the current 5m0s estimated window.",
 		"# TYPE http_server_requests_per_second gauge",
-		"# HELP http_server_errors_per_second HTTP 5xx responses per second over the current 5m0s rolling window.",
+		"# HELP http_server_errors_per_second HTTP 5xx responses per second by path over the current 5m0s estimated window.",
 		"# TYPE http_server_errors_per_second gauge",
-		"# HELP http_server_average_latency_seconds Average HTTP request latency in seconds over the current 5m0s rolling window.",
+		"# HELP http_server_average_latency_seconds Average HTTP request latency in seconds by path over the current 5m0s estimated window.",
 		"# TYPE http_server_average_latency_seconds gauge",
-		"# HELP http_server_response_codes HTTP responses by status code over the current 5m0s rolling window.",
+		"# HELP http_server_response_codes HTTP responses by status code over the current 5m0s estimated window.",
 		"# TYPE http_server_response_codes gauge",
-		"# HELP http_server_error_urls HTTP 5xx responses by path and status code over the current 5m0s rolling window.",
+		"# HELP http_server_error_urls HTTP 5xx responses by path and status code over the current 5m0s estimated window.",
 		"# TYPE http_server_error_urls gauge",
-		"# HELP http_server_unknown_urls HTTP 404 responses by path over the current 5m0s rolling window.",
+		"# HELP http_server_unknown_urls HTTP 404 responses by path over the current 5m0s estimated window.",
 		"# TYPE http_server_unknown_urls gauge",
 		"http_server_requests_total 2",
 		"http_server_errors_total 1",
+		`http_server_requests_per_second{path="-"} 0.006667`,
+		`http_server_errors_per_second{path="-"} 0.003333`,
 		`http_server_response_codes{code="404"} 1`,
 		`http_server_response_codes{code="500"} 1`,
 		`http_server_error_urls{code="500",path="/fail"} 1`,
@@ -273,6 +304,46 @@ func TestHTTPMetricsSnapshotIsCachedBriefly(t *testing.T) {
 	}
 }
 
+func TestHTTPMetricsStorageGrowsByPathAndStatusNotObservations(t *testing.T) {
+	now := time.Date(2026, 5, 17, 12, 0, 0, 0, time.UTC)
+	metrics := NewHTTPMetrics(
+		WithHTTPMetricsWindow(time.Minute),
+		withHTTPMetricsClock(func() time.Time { return now }),
+	)
+	handler := metrics.Middleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	for range 100 {
+		handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/ok", nil))
+	}
+
+	metrics.mu.Lock()
+	if got, want := len(metrics.paths), 2; got != want {
+		metrics.mu.Unlock()
+		t.Fatalf("paths len = %d, want %d", got, want)
+	}
+	if _, ok := metrics.paths["-"]; !ok {
+		metrics.mu.Unlock()
+		t.Fatal("missing aggregate path")
+	}
+	if got, want := len(metrics.paths["/ok"].statuses), 1; got != want {
+		metrics.mu.Unlock()
+		t.Fatalf("/ok statuses len = %d, want %d", got, want)
+	}
+	metrics.mu.Unlock()
+
+	now = now.Add(2 * time.Minute)
+	metrics.Snapshot()
+
+	metrics.mu.Lock()
+	defer metrics.mu.Unlock()
+
+	if got := len(metrics.paths); got != 0 {
+		t.Fatalf("paths len after aging = %d, want 0", got)
+	}
+}
+
 func TestHTTPCheckRefreshesDataWithoutStatusTransition(t *testing.T) {
 	now := time.Date(2026, 5, 17, 12, 0, 0, 0, time.UTC)
 	metrics := NewHTTPMetrics(withHTTPMetricsClock(func() time.Time { return now }))
@@ -324,5 +395,33 @@ func TestHTTPCheckReasonIsStableAcrossMeasurementChanges(t *testing.T) {
 	}
 	if len(second.History) != len(first.History) {
 		t.Fatalf("history grew on same-rule measurement update: %d != %d", len(second.History), len(first.History))
+	}
+}
+
+func TestHTTPAverageLatencyCheckReportsSlowPaths(t *testing.T) {
+	now := time.Date(2026, 5, 17, 12, 0, 0, 0, time.UTC)
+	metrics := NewHTTPMetrics(
+		WithHTTPMetricsWindow(time.Minute),
+		WithHTTPMetricsSnapshotRefresh(0),
+		withHTTPMetricsClock(func() time.Time { return now }),
+	)
+	check := NewHTTPAverageLatencyCheck(metrics, "http latency", 10*time.Millisecond, 0, 0)
+
+	metrics.observe("/fast", http.StatusNoContent, time.Millisecond)
+	metrics.observe("/slow", http.StatusNoContent, 100*time.Millisecond)
+
+	snap := check.Snapshot()
+	if snap.Status != statekit.Warn {
+		t.Fatalf("status = %v, want warn: %+v", snap.Status, snap)
+	}
+	slowPaths, ok := snap.Data["slow_paths"].([]map[string]any)
+	if !ok {
+		t.Fatalf("slow_paths = %#v, want []map[string]any", snap.Data["slow_paths"])
+	}
+	if len(slowPaths) == 0 {
+		t.Fatal("slow_paths is empty")
+	}
+	if got, want := slowPaths[0]["path"], "/slow"; got != want {
+		t.Fatalf("first slow path = %#v, want %q", got, want)
 	}
 }
