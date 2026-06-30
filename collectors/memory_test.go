@@ -120,6 +120,43 @@ func TestNewMemoryTracker(t *testing.T) {
 	}
 }
 
+func TestMemoryThresholdsFromOSFallback(t *testing.T) {
+	warnAt, failAt, available, ok := MemoryThresholdsFromOS(0.50, 0.75)
+	if !ok {
+		if available != 1<<30 {
+			t.Fatalf("fallback available = %d, want %d", available, uint64(1<<30))
+		}
+		if warnAt != 512<<20 || failAt != 768<<20 {
+			t.Fatalf("fallback thresholds = %d/%d, want %d/%d", warnAt, failAt, uint64(512<<20), uint64(768<<20))
+		}
+		return
+	}
+	if available == 0 || warnAt == 0 || failAt == 0 {
+		t.Fatalf("thresholds should be non-zero when available memory is reported: warn=%d fail=%d available=%d", warnAt, failAt, available)
+	}
+}
+
+func TestFormatBytes(t *testing.T) {
+	tests := []struct {
+		name  string
+		bytes uint64
+		want  string
+	}{
+		{name: "bytes", bytes: 512, want: "512 B"},
+		{name: "kib", bytes: 1536, want: "1.50 KiB"},
+		{name: "mib", bytes: 153042296, want: "145.95 MiB"},
+		{name: "gib", bytes: 3 << 30, want: "3.00 GiB"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := FormatBytes(tt.bytes); got != tt.want {
+				t.Fatalf("FormatBytes(%d) = %q, want %q", tt.bytes, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestMemoryUsageCheckWritesHeapProfileOnThresholdCrossing(t *testing.T) {
 	values := []uint64{50, 120, 130, 220, 210, 80, 120}
 	var profiles []string
@@ -186,7 +223,7 @@ func TestMemoryHandlerFuncJSON(t *testing.T) {
 		t.Fatalf("content type = %q", got)
 	}
 	body := response.Body.String()
-	for _, want := range []string{`"usage_bytes": 120`, `"usage_source": "go_sys_bytes"`, `"go_sys_bytes": 120`} {
+	for _, want := range []string{`"usage": "120 B"`, `"usage_bytes": 120`, `"usage_source": "go_sys_bytes"`, `"go_sys": "120 B"`, `"go_sys_bytes": 120`} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("memory json missing %q:\n%s", want, body)
 		}
@@ -208,7 +245,7 @@ func TestMemoryHandlerFuncYAML(t *testing.T) {
 		t.Fatalf("content type = %q", got)
 	}
 	body := response.Body.String()
-	for _, want := range []string{"usage_bytes: 120", "usage_source: go_sys_bytes", "go_sys_bytes: 120"} {
+	for _, want := range []string{"usage: 120 B", "usage_bytes: 120", "usage_source: go_sys_bytes", "go_sys: 120 B", "go_sys_bytes: 120"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("memory yaml missing %q:\n%s", want, body)
 		}
