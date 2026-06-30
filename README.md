@@ -253,8 +253,9 @@ cache := statekit.NewManualState("cache", statekit.WithImportance(statekit.Infor
 
 #### Fail ratio
 
-Tracks pass/fail outcomes over a sliding window and evaluates them into a
-status:
+Tracks pass/fail outcomes over an epoch-weighted estimated window and evaluates
+them into a status. Storage is bounded by counter width instead of growing with
+the number of outcomes inside the window:
 
 ```go
 upstream := statekit.NewFailRatio(
@@ -268,7 +269,7 @@ upstream.Fail()
 ```
 
 `statekit.AllFailed(minSamples, status)` provides a policy that only fires
-when every observed outcome in the window failed.
+when every estimated outcome in the window failed.
 
 #### Fail map
 

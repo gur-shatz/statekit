@@ -3,6 +3,8 @@ package statekit
 import (
 	"sync"
 	"time"
+
+	counters "github.com/gur-shatz/statekit/util"
 )
 
 type FailRatioPolicy interface {
@@ -17,20 +19,23 @@ type FailRatioSnapshot struct {
 	FailRatio float64       `json:"fail_ratio" yaml:"fail_ratio"`
 }
 
-type failRatioEvent struct {
-	at     time.Time
-	failed bool
-}
+const (
+	failRatioCounterTotal = iota
+	failRatioCounterFailures
+	failRatioCounterWidth
+)
 
-// FailRatio tracks pass/fail outcomes over a sliding time window and evaluates
-// them into state.
+// FailRatio tracks pass/fail outcomes over an epoch-weighted estimated window
+// and evaluates them into state.
 type FailRatio struct {
-	mu      sync.RWMutex
-	tracker stateTracker
-	window  time.Duration
-	policy  FailRatioPolicy
-	events  []failRatioEvent
-	now     clock
+	mu                 sync.RWMutex
+	tracker            stateTracker
+	window             time.Duration
+	policy             FailRatioPolicy
+	counters           *counters.EpochWeightedCounters
+	cumulativeTotal    int64
+	cumulativeFailures int64
+	now                clock
 }
 
 func NewFailRatio(name string, window time.Duration, policy FailRatioPolicy, opts ...Option) *FailRatio {
@@ -44,12 +49,17 @@ func NewFailRatio(name string, window time.Duration, policy FailRatioPolicy, opt
 	if policy == nil {
 		policy = RatioPolicy{FailAt: 1, MinSamples: 1}
 	}
-	return &FailRatio{
+	f := &FailRatio{
 		tracker: newStateTracker(name, o.importance, o.help, o.now),
 		window:  window,
 		policy:  policy,
 		now:     o.now,
 	}
+	if window > 0 {
+		now := o.now()
+		f.counters = counters.NewEpochWeightedCounters(failRatioSpan(window), failRatioTimestamp(now), failRatioCounterWidth)
+	}
+	return f
 }
 
 func (f *FailRatio) Name() string {
@@ -67,41 +77,50 @@ func (f *FailRatio) Fail() {
 func (f *FailRatio) record(failed bool) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.events = append(f.events, failRatioEvent{at: f.now(), failed: failed})
-	f.pruneLocked()
-	f.updateLocked()
+	now := f.now()
+	if f.window <= 0 {
+		f.cumulativeTotal++
+		if failed {
+			f.cumulativeFailures++
+		}
+	} else {
+		values := [failRatioCounterWidth]int64{failRatioCounterTotal: 1}
+		if failed {
+			values[failRatioCounterFailures] = 1
+		}
+		f.counters.Add(failRatioTimestamp(now), values[:])
+	}
+	f.updateLocked(now)
 }
 
 func (f *FailRatio) Snapshot() Snapshot {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.pruneLocked()
-	f.updateLocked()
+	f.updateLocked(f.now())
 	return f.tracker.snapshot(nil)
 }
 
 func (f *FailRatio) RatioSnapshot() FailRatioSnapshot {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.pruneLocked()
-	return f.ratioSnapshotLocked()
+	return f.ratioSnapshotLocked(f.now())
 }
 
 func (f *FailRatio) DescribePrometheus() []PrometheusDesc {
 	return []PrometheusDesc{
 		{
 			Name: "fail_ratio",
-			Help: "Ratio of failed outcomes in the configured sliding window.",
+			Help: "Ratio of failed outcomes in the configured estimated window.",
 			Type: PrometheusGauge,
 		},
 		{
 			Name: "fail_ratio_total",
-			Help: "Total outcomes in the configured sliding window.",
+			Help: "Total outcomes in the configured estimated window.",
 			Type: PrometheusGauge,
 		},
 		{
 			Name: "fail_ratio_failures",
-			Help: "Failed outcomes in the configured sliding window.",
+			Help: "Failed outcomes in the configured estimated window.",
 			Type: PrometheusGauge,
 		},
 	}
@@ -117,35 +136,14 @@ func (f *FailRatio) CollectPrometheus() []PrometheusSample {
 	}
 }
 
-func (f *FailRatio) pruneLocked() {
-	if f.window <= 0 {
-		return
-	}
-	cutoff := f.now().Add(-f.window)
-	keep := 0
-	for keep < len(f.events) && f.events[keep].at.Before(cutoff) {
-		keep++
-	}
-	if keep > 0 {
-		copy(f.events, f.events[keep:])
-		f.events = f.events[:len(f.events)-keep]
-	}
-}
-
-func (f *FailRatio) updateLocked() {
-	ratio := f.ratioSnapshotLocked()
+func (f *FailRatio) updateLocked(now time.Time) {
+	ratio := f.ratioSnapshotLocked(now)
 	status, reason, data := f.policy.Evaluate(ratio)
 	f.tracker.set(status, reason, data)
 }
 
-func (f *FailRatio) ratioSnapshotLocked() FailRatioSnapshot {
-	failures := 0
-	for _, event := range f.events {
-		if event.failed {
-			failures++
-		}
-	}
-	total := len(f.events)
+func (f *FailRatio) ratioSnapshotLocked(now time.Time) FailRatioSnapshot {
+	total, failures := f.ratioCountsLocked(now)
 	var ratio float64
 	if total > 0 {
 		ratio = float64(failures) / float64(total)
@@ -159,7 +157,26 @@ func (f *FailRatio) ratioSnapshotLocked() FailRatioSnapshot {
 	}
 }
 
-// AllFailedPolicy marks the state bad when every sample in the window failed.
+func (f *FailRatio) ratioCountsLocked(now time.Time) (int, int) {
+	if f.window <= 0 {
+		return int(f.cumulativeTotal), int(f.cumulativeFailures)
+	}
+	if f.counters == nil {
+		f.counters = counters.NewEpochWeightedCounters(failRatioSpan(f.window), failRatioTimestamp(now), failRatioCounterWidth)
+	}
+
+	values := make([]int64, failRatioCounterWidth)
+	f.counters.CurrentWindowValue(failRatioTimestamp(now), values)
+	total := int(max(values[failRatioCounterTotal], 0))
+	failures := int(max(values[failRatioCounterFailures], 0))
+	if failures > total {
+		failures = total
+	}
+	return total, failures
+}
+
+// AllFailedPolicy marks the state bad when every estimated outcome in the
+// window failed.
 type AllFailedPolicy struct {
 	MinSamples int
 	BadStatus  Status
@@ -219,4 +236,16 @@ func failRatioData(s FailRatioSnapshot) map[string]any {
 		"passes":     s.Passes,
 		"fail_ratio": s.FailRatio,
 	}
+}
+
+func failRatioSpan(window time.Duration) uint32 {
+	seconds := uint32(window / time.Second)
+	if seconds == 0 {
+		return 1
+	}
+	return seconds
+}
+
+func failRatioTimestamp(t time.Time) uint32 {
+	return uint32(t.Unix())
 }

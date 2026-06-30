@@ -1031,6 +1031,39 @@ func TestFailRatioThresholdPolicyAndWindow(t *testing.T) {
 	}
 }
 
+func TestFailRatioStorageDoesNotGrowWithOutcomes(t *testing.T) {
+	now := time.Date(2026, 5, 15, 12, 0, 0, 0, time.UTC)
+	fr := NewFailRatio("upstream", time.Minute, RatioPolicy{MinSamples: 1, FailAt: 0.5}, WithClock(func() time.Time { return now }))
+
+	for range 1000 {
+		fr.Fail()
+	}
+
+	if fr.counters == nil {
+		t.Fatal("missing bounded counters")
+	}
+	if got, want := fr.counters.Len(), failRatioCounterWidth; got != want {
+		t.Fatalf("counter width = %d, want %d", got, want)
+	}
+	if snap := fr.RatioSnapshot(); snap.Total != 1000 || snap.Failures != 1000 {
+		t.Fatalf("snapshot = %+v, want 1000 total failures", snap)
+	}
+}
+
+func TestFailRatioWithoutWindowUsesCumulativeCounts(t *testing.T) {
+	now := time.Date(2026, 5, 15, 12, 0, 0, 0, time.UTC)
+	fr := NewFailRatio("upstream", 0, RatioPolicy{MinSamples: 1, FailAt: 0.5}, WithClock(func() time.Time { return now }))
+
+	fr.Fail()
+	now = now.Add(24 * time.Hour)
+	fr.Pass()
+
+	snap := fr.RatioSnapshot()
+	if snap.Total != 2 || snap.Failures != 1 || snap.Passes != 1 || snap.FailRatio != 0.5 {
+		t.Fatalf("snapshot = %+v, want cumulative 1/2 failure ratio", snap)
+	}
+}
+
 func TestFailMapTracksFailingItems(t *testing.T) {
 	now := time.Date(2026, 5, 15, 12, 0, 0, 0, time.UTC)
 	fm := NewFailMap("collection", WithClock(func() time.Time { return now }))
