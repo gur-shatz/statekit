@@ -22,19 +22,19 @@ type memoryOptions struct {
 }
 
 type MemorySnapshot struct {
-	GoAllocBytes        uint64
-	GoTotalAllocBytes   uint64
-	GoSysBytes          uint64
-	GoHeapAllocBytes    uint64
-	GoHeapSysBytes      uint64
-	GoHeapIdleBytes     uint64
-	GoHeapReleasedBytes uint64
-	GoStackInuseBytes   uint64
-	GoObjects           uint64
-	OSRSSBytes          uint64
-	OSRSSAvailable      bool
-	OSPeakRSSBytes      uint64
-	OSPeakRSSAvailable  bool
+	GoAllocBytes        uint64 `json:"go_alloc_bytes" yaml:"go_alloc_bytes"`
+	GoTotalAllocBytes   uint64 `json:"go_total_alloc_bytes" yaml:"go_total_alloc_bytes"`
+	GoSysBytes          uint64 `json:"go_sys_bytes" yaml:"go_sys_bytes"`
+	GoHeapAllocBytes    uint64 `json:"go_heap_alloc_bytes" yaml:"go_heap_alloc_bytes"`
+	GoHeapSysBytes      uint64 `json:"go_heap_sys_bytes" yaml:"go_heap_sys_bytes"`
+	GoHeapIdleBytes     uint64 `json:"go_heap_idle_bytes" yaml:"go_heap_idle_bytes"`
+	GoHeapReleasedBytes uint64 `json:"go_heap_released_bytes" yaml:"go_heap_released_bytes"`
+	GoStackInuseBytes   uint64 `json:"go_stack_inuse_bytes" yaml:"go_stack_inuse_bytes"`
+	GoObjects           uint64 `json:"go_objects" yaml:"go_objects"`
+	OSRSSBytes          uint64 `json:"os_rss_bytes" yaml:"os_rss_bytes"`
+	OSRSSAvailable      bool   `json:"os_rss_available" yaml:"os_rss_available"`
+	OSPeakRSSBytes      uint64 `json:"os_peak_rss_bytes" yaml:"os_peak_rss_bytes"`
+	OSPeakRSSAvailable  bool   `json:"os_peak_rss_available" yaml:"os_peak_rss_available"`
 }
 
 func NewMemoryMetrics(opts ...MemoryOption) *MemoryMetrics {

@@ -165,11 +165,14 @@ memory := collectors.NewMemoryTracker("memory usage", 512*1024*1024, 1024*1024*1
 
 reg.Register(memory.State)
 reg.RegisterCollectors(memory.Metrics)
+
+mux.Handle("/memory", memory.Metrics.Handler("yaml"))
 ```
 
 The state checks current OS RSS when available, then falls back to Go runtime
 memory obtained from the OS. The metrics include Go heap/sys details and OS RSS
-or peak RSS samples when available.
+or peak RSS samples when available. The memory handler prints the current usage
+summary and raw memory snapshot for backoffice/debug views.
 
 To capture a heap profile when memory crosses into warn or fail, pass a profile
 directory:

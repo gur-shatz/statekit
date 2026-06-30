@@ -2,6 +2,9 @@ package collectors
 
 import (
 	"errors"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/gur-shatz/statekit"
@@ -165,5 +168,62 @@ func TestMemoryUsageCheckReportsHeapProfileError(t *testing.T) {
 	current := check.Current()
 	if current.Data["heap_profile_error"] != errMemoryProfileTest.Error() {
 		t.Fatalf("heap_profile_error = %#v, want %q", current.Data["heap_profile_error"], errMemoryProfileTest.Error())
+	}
+}
+
+func TestMemoryHandlerFuncJSON(t *testing.T) {
+	metrics := NewMemoryMetrics(withMemoryReader(func() MemorySnapshot {
+		return MemorySnapshot{GoSysBytes: 120}
+	}))
+	response := httptest.NewRecorder()
+
+	MemoryHandlerFunc(metrics, "json")(response, httptest.NewRequest(http.MethodGet, "/memory", nil))
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", response.Code, response.Body.String())
+	}
+	if got := response.Header().Get("Content-Type"); got != "application/json; charset=utf-8" {
+		t.Fatalf("content type = %q", got)
+	}
+	body := response.Body.String()
+	for _, want := range []string{`"usage_bytes": 120`, `"usage_source": "go_sys_bytes"`, `"go_sys_bytes": 120`} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("memory json missing %q:\n%s", want, body)
+		}
+	}
+}
+
+func TestMemoryHandlerFuncYAML(t *testing.T) {
+	metrics := NewMemoryMetrics(withMemoryReader(func() MemorySnapshot {
+		return MemorySnapshot{GoSysBytes: 120}
+	}))
+	response := httptest.NewRecorder()
+
+	metrics.Handler("yaml").ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/memory", nil))
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", response.Code, response.Body.String())
+	}
+	if got := response.Header().Get("Content-Type"); got != "application/yaml; charset=utf-8" {
+		t.Fatalf("content type = %q", got)
+	}
+	body := response.Body.String()
+	for _, want := range []string{"usage_bytes: 120", "usage_source: go_sys_bytes", "go_sys_bytes: 120"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("memory yaml missing %q:\n%s", want, body)
+		}
+	}
+}
+
+func TestMemoryHandlerFuncUnsupportedFormat(t *testing.T) {
+	response := httptest.NewRecorder()
+
+	MemoryHandlerFunc(NewMemoryMetrics(), "toml")(response, httptest.NewRequest(http.MethodGet, "/memory", nil))
+
+	if response.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", response.Code)
+	}
+	if !strings.Contains(response.Body.String(), `unsupported memory format "toml"`) {
+		t.Fatalf("body = %q", response.Body.String())
 	}
 }
