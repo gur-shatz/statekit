@@ -94,6 +94,7 @@ demo-urls:
 	@echo "  UI:             http://localhost:$(STACKDEMO_PORT)/"
 	@echo "  Fleet state:    http://localhost:$(STACKDEMO_PORT)/fleet/state"
 	@echo "  Storage groups: http://localhost:$(STACKDEMO_PORT)/api/state/groups?by=group_name"
+	@echo "  Console UI:     http://localhost:$(STACKDEMO_PORT)/console/"
 	@echo "  Storage UI:     http://localhost:$(STACKDEMO_PORT)/storage/"
 	@echo "  Incidents:      http://localhost:$(STACKDEMO_PORT)/api/escalations/incidents"
 	@echo "  Kill URL:       http://localhost:$(STACKDEMO_PORT)/-/quit"

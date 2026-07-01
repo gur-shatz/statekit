@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ .Title }} · fleet state console</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="app.css">
+</head>
+<body>
+  <div class="topRail"></div>
+
+  <header class="appbar">
+    <div class="row1">
+      <div class="brand">
+        <div class="logo"><span></span></div>
+        <span class="wordmark">{{ .Title }}</span>
+        <span class="statusBadge pass" id="statusBadge"><span class="dot"></span><span id="statusBadgeText">LOADING</span></span>
+        <span class="clock" id="clock"></span>
+      </div>
+      <div class="actions" style="display:flex;align-items:center;gap:10px;">
+        <select class="select" id="projectionMode" aria-label="Projection mode">
+          <option value="server">server projection</option>
+          <option value="browser">browser derived</option>
+        </select>
+        <button class="btn" id="refresh" type="button"><span>&#8635;</span>Refresh</button>
+      </div>
+    </div>
+    <div class="row2">
+      <div class="tabs">
+        <button class="tab active" id="tabFleet" type="button">Fleet State</button>
+        <button class="tab" id="tabOverview" type="button">Overview</button>
+      </div>
+      <div class="spark">
+        <div class="body">
+          <div class="sparkLabels">
+            <span>ERROR TRANSITIONS</span>
+            <span id="sparkSummary"></span>
+          </div>
+          <div class="sparkBars" id="sparkBars"></div>
+          <div class="sparkAxis" id="sparkAxis"></div>
+          <div class="sparkTip hidden" id="sparkTip"></div>
+        </div>
+        <select class="select sm" id="timelineWindow" aria-label="Timeline window">
+          <option value="1800000">30 minutes</option>
+          <option value="3600000">1 hour</option>
+          <option value="10800000">3 hours</option>
+          <option value="43200000">12 hours</option>
+        </select>
+      </div>
+    </div>
+  </header>
+
+  <div class="errbar hidden" id="errbar"></div>
+
+  <!-- ===== FLEET STATE ===== -->
+  <div class="view" id="viewFleet">
+    <div class="fleet">
+      <div class="col">
+        <div class="colHead"><span class="t">Targets</span><span class="metaMono" id="targetsRollup"></span></div>
+        <div class="colBody rail" id="targets"></div>
+      </div>
+      <div class="col">
+        <div class="colHead"><span class="t" id="statesTitle">States</span><span class="metaMono" id="statesRollup"></span></div>
+        <div class="colBody" id="states"></div>
+      </div>
+      <div class="col">
+        <div class="detailCrumbs" id="detailCrumbs"></div>
+        <div class="detailBody" id="detail"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== OVERVIEW ===== -->
+  <div class="view hidden" id="viewOverview">
+    <section class="section">
+      <div class="counts" id="counts"></div>
+    </section>
+    <section class="section">
+      <div class="sectionHead">
+        <div style="display:flex;align-items:baseline;gap:10px;">
+          <h2>Incidents</h2>
+          <span class="tag" id="incidentsCount">0 active</span>
+          <span class="metaMono">component escalations &amp; fleet ops</span>
+        </div>
+        <select class="select sm" id="incidentFilter" aria-label="Incident filter">
+          <option value="active">active</option>
+          <option value="">all</option>
+          <option value="open">open</option>
+          <option value="closed">closed</option>
+          <option value="acknowledged">acknowledged</option>
+          <option value="global">fleet ops</option>
+        </select>
+      </div>
+      <div id="incidents"></div>
+    </section>
+  </div>
+
+  <script>
+    window.STATEKIT_API_BASE = "{{ .APIBase }}";
+  </script>
+  <script src="app.js"></script>
+</body>
+</html>

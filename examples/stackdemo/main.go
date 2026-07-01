@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/gur-shatz/statekit"
+	"github.com/gur-shatz/statekit/console"
 	"github.com/gur-shatz/statekit/infopages"
 	"github.com/gur-shatz/statekit/scraper"
 	"github.com/gur-shatz/statekit/storage"
@@ -315,6 +316,10 @@ func main() {
 	api := storage.NewAPI(store)
 	mux.Handle("/api/", http.StripPrefix("/api", api.Handler()))
 	mux.Handle("/storage/", http.StripPrefix("/storage", storage.UIHandler(storage.UIOptions{APIBase: "/api"})))
+	mux.Handle("/console/", http.StripPrefix("/console", console.Handler(console.Options{
+		Title:   "statekit stackdemo",
+		APIBase: "/api",
+	})))
 	mux.Handle("/info/", http.StripPrefix("/info", infopages.Handler(infopages.Options{
 		Title:       "statekit stackdemo",
 		Registry:    fleet.reg,
@@ -438,6 +443,7 @@ const homeHTML = `<!doctype html>
           <li><a href="/api/escalations/incidents">all incidents</a></li>
           <li><a href="/api/escalations/incidents?type=deployment">deployment incidents</a></li>
           <li><a href="/api/openapi.yaml">openapi.yaml</a></li>
+          <li><a href="/console/">fleet state console</a></li>
           <li><a href="/storage/">storage console</a></li>
           <li><a href="/info/">info pages</a></li>
         </ul>

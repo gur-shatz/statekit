@@ -19,6 +19,9 @@ targets:
       - name: UI
         description: Stack demo UI
         url: "http://localhost:{{ .PORT }}/"
+      - name: Console
+        description: Fleet state console dashboard
+        url: "http://localhost:{{ .PORT }}/console/"
       - name: Fleet state
         description: Aggregated fleet state
         url: "http://localhost:{{ .PORT }}/fleet/state"
