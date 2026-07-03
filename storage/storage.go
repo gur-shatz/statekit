@@ -1,4 +1,17 @@
 // Package storage stores statekit display documents in a query-friendly shape.
+//
+// Data is organized in three layers by access pattern:
+//
+//   - L1: current target summaries and per-state headers, no data payloads.
+//     Polled constantly, replaced in place on ingest, O(fleet).
+//   - L2: full current state detail including data. Fetched per target or per
+//     state on drill-down, replaced in place on ingest, O(fleet x data size).
+//   - L3: historical and bounded: per-identity transition rings, the charting
+//     store (chart.go), and incidents with retention.
+//
+// L1 and L2 are replaced on every ingest, so their size is a function of
+// fleet size, not of time. Only L3 grows with time and every L3 structure is
+// explicitly bounded, so worst-case memory is computable from configuration.
 package storage
 
 import (
@@ -6,6 +19,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strconv"
@@ -16,65 +30,47 @@ import (
 	"github.com/gur-shatz/statekit"
 )
 
+// ErrNotFound is wrapped by reads whose subject does not exist in the store.
+var ErrNotFound = errors.New("not found")
+
 // Store is the storage boundary. Backends should treat IngestDocument as the
 // entry point for every state document received from a component or scraper.
 type Store interface {
 	IngestDocument(ctx context.Context, doc statekit.StateDisplayDocument, observedAt time.Time) error
 	IngestEscalations(ctx context.Context, source string, doc statekit.EscalationDisplayDocument, observedAt time.Time) error
-	Current(ctx context.Context, filter CurrentFilter) ([]CurrentState, error)
-	Groups(ctx context.Context, query GroupQuery) ([]GroupBucket, error)
-	Events(ctx context.Context, filter EventFilter) ([]StateEvent, error)
-	Targets(ctx context.Context) ([]TargetDocument, error)
+
+	// L1: polled constantly, no data payloads.
+	Summary(ctx context.Context) (FleetSummary, error)
+	Targets(ctx context.Context) ([]TargetSummary, error)
+	// L2: fetched on drill-down, carries the heavy fields.
+	TargetDetail(ctx context.Context, key string) (TargetDetail, error)
+	StateDetail(ctx context.Context, identity string) (StateDetail, error)
+	// L3: historical, bounded.
+	StateTimeline(ctx context.Context, identity string) (StateTimeline, error)
+
 	Incidents(ctx context.Context, filter IncidentFilter) ([]Incident, error)
 	AcknowledgeIncident(ctx context.Context, source, id string, at time.Time) error
 }
 
-type StateNode struct {
-	Identity       string                       `json:"identity"`
-	ParentIdentity string                       `json:"parent_identity,omitempty"`
-	Name           string                       `json:"name"`
-	ScrapedFrom    string                       `json:"scraped_from,omitempty"`
-	ScrapePath     string                       `json:"scrape_path,omitempty"`
-	Importance     string                       `json:"importance"`
-	Help           string                       `json:"help,omitempty"`
-	GroupName      string                       `json:"group_name,omitempty"`
-	LabelPath      []statekit.StateDisplayLabel `json:"label_path,omitempty"`
-	Labels         map[string]string            `json:"labels,omitempty"`
-	FirstSeenAt    time.Time                    `json:"first_seen_at"`
-	LastSeenAt     time.Time                    `json:"last_seen_at"`
-	MetadataHash   string                       `json:"metadata_hash"`
+// FleetSummary is the L1 fleet rollup served by GET /state/summary. FleetHash
+// is its ETag: the hash of the sorted (key, material_hash) pairs, recomputed
+// at ingest.
+type FleetSummary struct {
+	WorstStatus  string            `json:"worst_status"`
+	StatusCounts map[string]int    `json:"status_counts"` // by state
+	Targets      FleetTargetCounts `json:"targets"`
+	FleetHash    string            `json:"fleet_hash"`
+	ObservedAt   time.Time         `json:"observed_at"`
 }
 
-type CurrentObservation struct {
-	Identity       string         `json:"identity"`
-	Status         string         `json:"status"`
-	Reason         string         `json:"reason,omitempty"`
-	ChangedAt      time.Time      `json:"changed_at"`
-	ChangedSecsAgo int64          `json:"changed_secs_ago"`
-	UpdatedAt      time.Time      `json:"updated_at,omitempty"`
-	UpdatedSecsAgo int64          `json:"updated_secs_ago,omitempty"`
-	ObservedAt     time.Time      `json:"observed_at"`
-	Data           map[string]any `json:"data,omitempty"`
-	DataHash       string         `json:"data_hash,omitempty"`
+type FleetTargetCounts struct {
+	Total    int            `json:"total"`
+	ByStatus map[string]int `json:"by_status"` // by target worst_status
 }
 
-type CurrentState struct {
-	StateNode
-	Observation CurrentObservation `json:"observation"`
-}
-
-type StateEvent struct {
-	EventKey   string         `json:"event_key"`
-	Identity   string         `json:"identity"`
-	Status     string         `json:"status"`
-	Reason     string         `json:"reason,omitempty"`
-	ChangedAt  time.Time      `json:"changed_at"`
-	UpdatedAt  time.Time      `json:"updated_at,omitempty"`
-	ObservedAt time.Time      `json:"observed_at"`
-	Data       map[string]any `json:"data,omitempty"`
-}
-
-type TargetDocument struct {
+// TargetSummary is one L1 rail entry. GET /state/targets returns the fleet's
+// summaries, each carrying the flat StateHeaders for its states.
+type TargetSummary struct {
 	Key            string            `json:"key"`
 	Name           string            `json:"name"`
 	ScrapePath     string            `json:"scrape_path"`
@@ -82,38 +78,22 @@ type TargetDocument struct {
 	WorstStatus    string            `json:"worst_status"`
 	StatusCounts   map[string]int    `json:"status_counts"`
 	AffectedStates []AffectedState   `json:"affected_states,omitempty"`
-	MaterialHash   string            `json:"material_hash"`
+	MaterialHash   string            `json:"material_hash"` // ETag for the L2 detail
 	ObservedAt     time.Time         `json:"observed_at"`
-	States         []TargetState     `json:"states"`
+	States         []StateHeader     `json:"states"`
 }
 
-type TargetState struct {
-	Identity   string            `json:"identity"`
-	Name       string            `json:"name"`
-	Status     string            `json:"status"`
-	Reason     string            `json:"reason,omitempty"`
-	Importance string            `json:"importance"`
-	Help       string            `json:"help,omitempty"`
-	GroupName  string            `json:"group_name,omitempty"`
-	Labels     map[string]string `json:"labels,omitempty"`
-	Data       map[string]any    `json:"data,omitempty"`
-	ChangedAt  time.Time         `json:"changed_at"`
-	UpdatedAt  time.Time         `json:"updated_at,omitempty"`
-	ObservedAt time.Time         `json:"observed_at"`
-	Checks     []TargetCheck     `json:"checks,omitempty"`
-}
-
-type TargetCheck struct {
-	Identity   string            `json:"identity"`
-	Name       string            `json:"name"`
-	Status     string            `json:"status"`
-	Reason     string            `json:"reason,omitempty"`
-	Importance string            `json:"importance"`
-	Help       string            `json:"help,omitempty"`
-	Labels     map[string]string `json:"labels,omitempty"`
-	ChangedAt  time.Time         `json:"changed_at"`
-	UpdatedAt  time.Time         `json:"updated_at,omitempty"`
-	ObservedAt time.Time         `json:"observed_at"`
+// StateHeader is the light per-state row: enough for the states column,
+// nothing heavy. State lists are flat with parent pointers, not nested trees.
+type StateHeader struct {
+	Identity       string    `json:"identity"`
+	ParentIdentity string    `json:"parent_identity,omitempty"`
+	TargetKey      string    `json:"target_key,omitempty"`
+	Name           string    `json:"name"`
+	Status         string    `json:"status"`
+	Reason         string    `json:"reason,omitempty"`
+	Importance     string    `json:"importance"`
+	ChangedAt      time.Time `json:"changed_at"`
 }
 
 type AffectedState struct {
@@ -123,27 +103,44 @@ type AffectedState struct {
 	ChangedAt time.Time `json:"changed_at"`
 }
 
-type CurrentFilter struct {
-	Status    string            `json:"status,omitempty"`
-	GroupName string            `json:"group_name,omitempty"`
-	Labels    map[string]string `json:"labels,omitempty"`
+// TargetDetail is the L2 response of GET /state/targets/{key}: the summary
+// plus full state details.
+type TargetDetail struct {
+	TargetSummary
+	Details []StateDetail `json:"details"`
 }
 
-type GroupQuery struct {
-	By     []string      `json:"by,omitempty"`
-	Filter CurrentFilter `json:"filter,omitempty"`
+// StateDetail is the L2 view of one state, served by GET /state/states/{identity}.
+type StateDetail struct {
+	StateHeader
+	ScrapedFrom string                       `json:"scraped_from,omitempty"`
+	ScrapePath  string                       `json:"scrape_path,omitempty"`
+	Help        string                       `json:"help,omitempty"`
+	GroupName   string                       `json:"group_name,omitempty"`
+	Labels      map[string]string            `json:"labels,omitempty"`
+	LabelPath   []statekit.StateDisplayLabel `json:"label_path,omitempty"`
+	Data        map[string]any               `json:"data,omitempty"`
+	DataHash    string                       `json:"data_hash"` // ETag component
+	UpdatedAt   time.Time                    `json:"updated_at,omitempty"`
+	ObservedAt  time.Time                    `json:"observed_at"`
+	FirstSeenAt time.Time                    `json:"first_seen_at"`
+	LastSeenAt  time.Time                    `json:"last_seen_at"`
+	Children    []string                     `json:"children,omitempty"` // child identities, filled on read
 }
 
-type GroupBucket struct {
-	Values       map[string]string `json:"values"`
-	StatusCounts map[string]int    `json:"status_counts"`
-	Total        int               `json:"total"`
-	WorstStatus  string            `json:"worst_status"`
+// Transition is one L3 ring entry. Its identity is
+// identity + changed_at + status; updated_at and reason are deliberately not
+// part of it, so scrapes of an unchanged state contribute nothing.
+type Transition struct {
+	ChangedAt time.Time `json:"changed_at"`
+	Status    string    `json:"status"`
+	Reason    string    `json:"reason,omitempty"`
 }
 
-type EventFilter struct {
-	Identity string `json:"identity,omitempty"`
-	Limit    int    `json:"limit,omitempty"`
+// StateTimeline is the response of GET /state/states/{identity}/timeline.
+type StateTimeline struct {
+	Identity    string       `json:"identity"`
+	Transitions []Transition `json:"transitions"` // newest first
 }
 
 type Incident struct {
@@ -184,19 +181,49 @@ type IncidentFilter struct {
 	Type   string `json:"type,omitempty"`
 }
 
+const (
+	defaultTransitionRingCap  = 32
+	defaultTransitionBackstop = 100_000
+	defaultClosedIncidentTTL  = 24 * time.Hour
+	defaultIncidentEventCap   = 100
+	defaultEvictionFallback   = 10 * time.Minute
+	// evictionIntervalFactor scales the observed ingest interval of a source
+	// into its liveness TTL: a source is evicted after missing this many of
+	// its own ingest cycles.
+	evictionIntervalFactor = 10
+)
+
 type MemoryStore struct {
-	mu                 sync.RWMutex
-	nodes              map[string]StateNode
-	current            map[string]CurrentObservation
-	events             map[string]StateEvent
-	order              []string
-	targets            map[string]TargetDocument
-	incidents          map[string]Incident
-	incidentEvents     map[string]map[string]IncidentEvent
+	mu sync.RWMutex
+
+	// L1
+	targets map[string]TargetSummary
+	// L2
+	details map[string]StateDetail
+	// L3
+	timelines       map[string]*transitionRing
+	transitionTotal int
+	chart           ChartStore
+	incidents       map[string]Incident
+	incidentEvents  map[string]map[string]IncidentEvent
+	incidentIndex   map[string]map[string]struct{} // source+"\n"+id -> incident identities
+
 	docScopeIdentities map[string]map[string]struct{}
 	docScopeTargets    map[string]map[string]struct{}
-	docCache           DocumentCache[statekit.StateDisplayDocument]
-	docTTL             time.Duration
+	docLastSeen        map[string]time.Time
+	docIntervals       map[string]time.Duration
+
+	fleetHash  string
+	observedAt time.Time
+
+	docCache DocumentCache[statekit.StateDisplayDocument]
+	docTTL   time.Duration
+
+	transitionCap      int
+	transitionBackstop int
+	closedIncidentTTL  time.Duration
+	incidentEventCap   int
+	evictionFallback   time.Duration
 }
 
 type MemoryStoreOption func(*MemoryStore)
@@ -208,16 +235,70 @@ func WithDocumentCache(cache DocumentCache[statekit.StateDisplayDocument], ttl t
 	}
 }
 
+// WithTransitionRing bounds L3 transition storage: ringCap transitions per
+// identity plus a global backstop across all identities.
+func WithTransitionRing(ringCap, backstop int) MemoryStoreOption {
+	return func(s *MemoryStore) {
+		if ringCap > 0 {
+			s.transitionCap = ringCap
+		}
+		if backstop > 0 {
+			s.transitionBackstop = backstop
+		}
+	}
+}
+
+// WithIncidentRetention bounds incident storage: closed incidents are dropped
+// closedTTL after their last update, and each incident keeps at most eventCap
+// of its newest events.
+func WithIncidentRetention(closedTTL time.Duration, eventCap int) MemoryStoreOption {
+	return func(s *MemoryStore) {
+		if closedTTL > 0 {
+			s.closedIncidentTTL = closedTTL
+		}
+		if eventCap > 0 {
+			s.incidentEventCap = eventCap
+		}
+	}
+}
+
+// WithChartStore replaces the charting store backend.
+func WithChartStore(chart ChartStore) MemoryStoreOption {
+	return func(s *MemoryStore) {
+		if chart != nil {
+			s.chart = chart
+		}
+	}
+}
+
+// WithEvictionFallback sets the liveness TTL used for sources whose ingest
+// interval has not been observed yet.
+func WithEvictionFallback(ttl time.Duration) MemoryStoreOption {
+	return func(s *MemoryStore) {
+		if ttl > 0 {
+			s.evictionFallback = ttl
+		}
+	}
+}
+
 func NewMemoryStore(opts ...MemoryStoreOption) *MemoryStore {
 	store := &MemoryStore{
-		nodes:              map[string]StateNode{},
-		current:            map[string]CurrentObservation{},
-		events:             map[string]StateEvent{},
-		targets:            map[string]TargetDocument{},
+		targets:            map[string]TargetSummary{},
+		details:            map[string]StateDetail{},
+		timelines:          map[string]*transitionRing{},
+		chart:              NewMemoryChartStore(time.Minute, 24*60),
 		incidents:          map[string]Incident{},
 		incidentEvents:     map[string]map[string]IncidentEvent{},
+		incidentIndex:      map[string]map[string]struct{}{},
 		docScopeIdentities: map[string]map[string]struct{}{},
 		docScopeTargets:    map[string]map[string]struct{}{},
+		docLastSeen:        map[string]time.Time{},
+		docIntervals:       map[string]time.Duration{},
+		transitionCap:      defaultTransitionRingCap,
+		transitionBackstop: defaultTransitionBackstop,
+		closedIncidentTTL:  defaultClosedIncidentTTL,
+		incidentEventCap:   defaultIncidentEventCap,
+		evictionFallback:   defaultEvictionFallback,
 	}
 	for _, opt := range opts {
 		opt(store)
@@ -225,19 +306,191 @@ func NewMemoryStore(opts ...MemoryStoreOption) *MemoryStore {
 	return store
 }
 
-func (s *MemoryStore) IngestEscalations(_ context.Context, source string, doc statekit.EscalationDisplayDocument, observedAt time.Time) error {
+// Chart exposes the charting store so its endpoints can be mounted beside the
+// state API.
+func (this *MemoryStore) Chart() ChartStore {
+	return this.chart
+}
+
+func (this *MemoryStore) IngestDocument(ctx context.Context, doc statekit.StateDisplayDocument, observedAt time.Time) error {
+	if observedAt.IsZero() {
+		observedAt = time.Now()
+	}
+	if err := this.cacheDocument(ctx, doc); err != nil {
+		return err
+	}
+	entries := flattenDocument(doc, observedAt)
+	summaries := buildTargetSummaries(entries)
+	docKey := StateDisplayDocumentKey(doc)
+
+	newIdentities := make(map[string]struct{}, len(entries))
+	for _, entry := range entries {
+		newIdentities[entry.Detail.Identity] = struct{}{}
+	}
+	newTargets := make(map[string]struct{}, len(summaries))
+	for _, summary := range summaries {
+		newTargets[summary.Key] = struct{}{}
+	}
+
+	this.mu.Lock()
+	for identity := range this.docScopeIdentities[docKey] {
+		if _, kept := newIdentities[identity]; kept {
+			continue
+		}
+		this.dropIdentity(identity)
+	}
+	for key := range this.docScopeTargets[docKey] {
+		if _, kept := newTargets[key]; kept {
+			continue
+		}
+		delete(this.targets, key)
+	}
+
+	for _, entry := range entries {
+		detail := entry.Detail
+		if existing, ok := this.details[detail.Identity]; ok {
+			detail.FirstSeenAt = existing.FirstSeenAt
+		}
+		this.details[detail.Identity] = detail
+		this.appendTransitions(detail.Identity, entry.Transitions)
+	}
+	for _, summary := range summaries {
+		this.targets[summary.Key] = summary
+	}
+	this.docScopeIdentities[docKey] = newIdentities
+	this.docScopeTargets[docKey] = newTargets
+	if last, ok := this.docLastSeen[docKey]; ok {
+		if delta := observedAt.Sub(last); delta > 0 {
+			this.docIntervals[docKey] = delta
+		}
+	}
+	this.docLastSeen[docKey] = observedAt
+	this.sweepExpiredScopes(docKey, observedAt)
+	this.sweepClosedIncidents(observedAt)
+	this.refreshFleetRollup(observedAt)
+	this.mu.Unlock()
+
+	this.chart.Record(observedAt, triggeringStates(entries))
+	return nil
+}
+
+// dropIdentity removes a state from every current layer and its transition
+// ring. Callers hold the write lock.
+func (this *MemoryStore) dropIdentity(identity string) {
+	delete(this.details, identity)
+	if ring := this.timelines[identity]; ring != nil {
+		this.transitionTotal -= len(ring.entries)
+		delete(this.timelines, identity)
+	}
+}
+
+// appendTransitions merges new transitions into the identity's ring, keeping
+// per-identity and global bounds. Callers hold the write lock.
+func (this *MemoryStore) appendTransitions(identity string, transitions []Transition) {
+	if len(transitions) == 0 {
+		return
+	}
+	ring := this.timelines[identity]
+	if ring == nil {
+		ring = &transitionRing{}
+		this.timelines[identity] = ring
+	}
+	for _, transition := range transitions {
+		added, dropped := ring.add(transition, this.transitionCap)
+		if added {
+			this.transitionTotal++
+		}
+		this.transitionTotal -= dropped
+	}
+	for this.transitionTotal > this.transitionBackstop {
+		if !this.evictOldestTransition() {
+			break
+		}
+	}
+}
+
+// evictOldestTransition drops the globally oldest transition across all
+// rings. Callers hold the write lock.
+func (this *MemoryStore) evictOldestTransition() bool {
+	var oldestIdentity string
+	var oldest time.Time
+	for identity, ring := range this.timelines {
+		if len(ring.entries) == 0 {
+			continue
+		}
+		if oldestIdentity == "" || ring.entries[0].ChangedAt.Before(oldest) {
+			oldestIdentity = identity
+			oldest = ring.entries[0].ChangedAt
+		}
+	}
+	if oldestIdentity == "" {
+		return false
+	}
+	ring := this.timelines[oldestIdentity]
+	ring.entries = ring.entries[1:]
+	this.transitionTotal--
+	if len(ring.entries) == 0 {
+		delete(this.timelines, oldestIdentity)
+	}
+	return true
+}
+
+// sweepExpiredScopes evicts every document scope whose source has gone
+// silent: not seen for evictionIntervalFactor times its observed ingest
+// interval, or the fallback TTL when the interval is unknown. Callers hold
+// the write lock.
+func (this *MemoryStore) sweepExpiredScopes(currentDocKey string, now time.Time) {
+	for docKey, lastSeen := range this.docLastSeen {
+		if docKey == currentDocKey {
+			continue
+		}
+		ttl := this.evictionFallback
+		if interval, ok := this.docIntervals[docKey]; ok {
+			ttl = interval * evictionIntervalFactor
+		}
+		if now.Sub(lastSeen) <= ttl {
+			continue
+		}
+		for identity := range this.docScopeIdentities[docKey] {
+			this.dropIdentity(identity)
+		}
+		for key := range this.docScopeTargets[docKey] {
+			delete(this.targets, key)
+		}
+		delete(this.docScopeIdentities, docKey)
+		delete(this.docScopeTargets, docKey)
+		delete(this.docLastSeen, docKey)
+		delete(this.docIntervals, docKey)
+	}
+}
+
+// refreshFleetRollup recomputes the fleet hash from the sorted
+// (key, material_hash) pairs. Callers hold the write lock.
+func (this *MemoryStore) refreshFleetRollup(observedAt time.Time) {
+	pairs := make([][2]string, 0, len(this.targets))
+	for key, target := range this.targets {
+		pairs = append(pairs, [2]string{key, target.MaterialHash})
+	}
+	sort.Slice(pairs, func(i, j int) bool { return pairs[i][0] < pairs[j][0] })
+	this.fleetHash = hashJSON(pairs)
+	if observedAt.After(this.observedAt) {
+		this.observedAt = observedAt
+	}
+}
+
+func (this *MemoryStore) IngestEscalations(_ context.Context, source string, doc statekit.EscalationDisplayDocument, observedAt time.Time) error {
 	if observedAt.IsZero() {
 		observedAt = time.Now()
 	}
 	labels := labelsFromLabelPath(doc.LabelPath)
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	this.mu.Lock()
+	defer this.mu.Unlock()
 	for _, in := range doc.Incidents {
 		origin := firstNonEmpty(in.ScrapedFrom, source)
 		scrapePath := firstNonEmpty(in.ScrapePath, source)
 		incidentLabels := mergeStringLabels(labels, in.Labels)
 		identity := incidentIdentity(origin, in.ID, in.CreatedAt)
-		incident := s.incidents[identity]
+		incident := this.incidents[identity]
 		incident.Identity = identity
 		incident.Source = origin
 		incident.ScrapedFrom = origin
@@ -254,10 +507,10 @@ func (s *MemoryStore) IngestEscalations(_ context.Context, source string, doc st
 		incident.Labels = incidentLabels
 		incident.Topics = cloneData(in.Topics)
 		incident.ObservedAt = observedAt
-		events := s.incidentEvents[identity]
+		events := this.incidentEvents[identity]
 		if events == nil {
 			events = map[string]IncidentEvent{}
-			s.incidentEvents[identity] = events
+			this.incidentEvents[identity] = events
 		}
 		for _, event := range in.Events {
 			key := hashJSON(map[string]any{"scraped_from": origin, "incident_id": in.ID, "created_at": in.CreatedAt, "seq": event.Seq})
@@ -272,167 +525,112 @@ func (s *MemoryStore) IngestEscalations(_ context.Context, source string, doc st
 				ObservedAt: observedAt,
 			}
 		}
-		incident.Events = sortedIncidentEvents(events)
-		s.incidents[identity] = incident
+		incident.Events = this.capIncidentEvents(events)
+		this.incidents[identity] = incident
+		this.indexIncident(incident)
 	}
+	this.sweepClosedIncidents(observedAt)
 	return nil
 }
 
-func (s *MemoryStore) IngestDocument(ctx context.Context, doc statekit.StateDisplayDocument, observedAt time.Time) error {
-	if observedAt.IsZero() {
-		observedAt = time.Now()
+// capIncidentEvents trims an incident's event map to the newest
+// incidentEventCap entries and returns them sorted. Callers hold the write
+// lock.
+func (this *MemoryStore) capIncidentEvents(events map[string]IncidentEvent) []IncidentEvent {
+	sorted := sortedIncidentEvents(events)
+	if len(sorted) <= this.incidentEventCap {
+		return sorted
 	}
-	if err := s.cacheDocument(ctx, doc); err != nil {
-		return err
+	for _, dropped := range sorted[:len(sorted)-this.incidentEventCap] {
+		delete(events, dropped.EventKey)
 	}
-	entries := flattenDocument(doc, observedAt)
-	targets := buildTargetDocuments(entries)
-	docKey := StateDisplayDocumentKey(doc)
-
-	newIdentities := make(map[string]struct{}, len(entries))
-	for _, entry := range entries {
-		newIdentities[entry.Node.Identity] = struct{}{}
-	}
-	newTargets := make(map[string]struct{}, len(targets))
-	for _, target := range targets {
-		newTargets[target.Key] = struct{}{}
-	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	for identity := range s.docScopeIdentities[docKey] {
-		if _, kept := newIdentities[identity]; kept {
-			continue
-		}
-		delete(s.nodes, identity)
-		delete(s.current, identity)
-	}
-	for key := range s.docScopeTargets[docKey] {
-		if _, kept := newTargets[key]; kept {
-			continue
-		}
-		delete(s.targets, key)
-	}
-
-	for _, entry := range entries {
-		if existing, ok := s.nodes[entry.Node.Identity]; ok {
-			entry.Node.FirstSeenAt = existing.FirstSeenAt
-		}
-		s.nodes[entry.Node.Identity] = entry.Node
-		s.current[entry.Current.Identity] = entry.Current
-		if _, ok := s.events[entry.Event.EventKey]; !ok {
-			s.events[entry.Event.EventKey] = entry.Event
-			s.order = append(s.order, entry.Event.EventKey)
-		}
-	}
-	for _, target := range targets {
-		s.targets[target.Key] = target
-	}
-	s.docScopeIdentities[docKey] = newIdentities
-	s.docScopeTargets[docKey] = newTargets
-	return nil
+	return sorted[len(sorted)-this.incidentEventCap:]
 }
 
-func (s *MemoryStore) CachedDocumentYAML(ctx context.Context, key string) ([]byte, bool, error) {
-	if s.docCache == nil {
+func (this *MemoryStore) indexIncident(incident Incident) {
+	key := incidentIndexKey(incident.Source, incident.ID)
+	identities := this.incidentIndex[key]
+	if identities == nil {
+		identities = map[string]struct{}{}
+		this.incidentIndex[key] = identities
+	}
+	identities[incident.Identity] = struct{}{}
+}
+
+// sweepClosedIncidents drops closed incidents whose last update is older than
+// the closed-incident TTL. Callers hold the write lock.
+func (this *MemoryStore) sweepClosedIncidents(now time.Time) {
+	for identity, incident := range this.incidents {
+		if incident.Status != statekit.EscalationClosed {
+			continue
+		}
+		lastActivity := incident.LastUpdatedAt
+		if incident.ObservedAt.After(lastActivity) {
+			lastActivity = incident.ObservedAt
+		}
+		if now.Sub(lastActivity) <= this.closedIncidentTTL {
+			continue
+		}
+		delete(this.incidents, identity)
+		delete(this.incidentEvents, identity)
+		key := incidentIndexKey(incident.Source, incident.ID)
+		if identities := this.incidentIndex[key]; identities != nil {
+			delete(identities, identity)
+			if len(identities) == 0 {
+				delete(this.incidentIndex, key)
+			}
+		}
+	}
+}
+
+func incidentIndexKey(source, id string) string {
+	return source + "\n" + id
+}
+
+func (this *MemoryStore) CachedDocumentYAML(ctx context.Context, key string) ([]byte, bool, error) {
+	if this.docCache == nil {
 		return nil, false, nil
 	}
-	return s.docCache.GetYAML(ctx, key)
+	return this.docCache.GetYAML(ctx, key)
 }
 
-func (s *MemoryStore) cacheDocument(ctx context.Context, doc statekit.StateDisplayDocument) error {
-	if s.docCache == nil {
+func (this *MemoryStore) cacheDocument(ctx context.Context, doc statekit.StateDisplayDocument) error {
+	if this.docCache == nil {
 		return nil
 	}
-	return s.docCache.Set(ctx, StateDisplayDocumentKey(doc), doc, s.docTTL)
+	return this.docCache.Set(ctx, StateDisplayDocumentKey(doc), doc, this.docTTL)
 }
 
-func (s *MemoryStore) Current(_ context.Context, filter CurrentFilter) ([]CurrentState, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+func (this *MemoryStore) Summary(_ context.Context) (FleetSummary, error) {
+	this.mu.RLock()
+	defer this.mu.RUnlock()
 
-	out := make([]CurrentState, 0, len(s.current))
-	for identity, current := range s.current {
-		node, ok := s.nodes[identity]
-		if !ok {
-			continue
-		}
-		item := CurrentState{StateNode: node, Observation: current}
-		if !matchesFilter(item, filter) {
-			continue
-		}
-		out = append(out, item)
+	out := FleetSummary{
+		WorstStatus:  statekit.Pass.String(),
+		StatusCounts: map[string]int{},
+		Targets:      FleetTargetCounts{ByStatus: map[string]int{}},
+		FleetHash:    this.fleetHash,
+		ObservedAt:   this.observedAt,
 	}
-	sort.Slice(out, func(i, j int) bool {
-		return out[i].Identity < out[j].Identity
-	})
-	return out, nil
-}
-
-func (s *MemoryStore) Groups(ctx context.Context, query GroupQuery) ([]GroupBucket, error) {
-	if len(query.By) == 0 {
-		query.By = []string{"group_name"}
-	}
-	current, err := s.Current(ctx, query.Filter)
-	if err != nil {
-		return nil, err
-	}
-	by := append([]string(nil), query.By...)
-	buckets := map[string]*GroupBucket{}
-	for _, item := range current {
-		values := groupValues(item, by)
-		key := stableString(values)
-		bucket := buckets[key]
-		if bucket == nil {
-			bucket = &GroupBucket{
-				Values:       values,
-				StatusCounts: map[string]int{},
-				WorstStatus:  statekit.Pass.String(),
-			}
-			buckets[key] = bucket
-		}
-		bucket.Total++
-		bucket.StatusCounts[item.Observation.Status]++
-		if statusRank(item.Observation.Status) > statusRank(bucket.WorstStatus) {
-			bucket.WorstStatus = item.Observation.Status
+	for _, detail := range this.details {
+		out.StatusCounts[detail.Status]++
+		if statusRank(detail.Status) > statusRank(out.WorstStatus) {
+			out.WorstStatus = detail.Status
 		}
 	}
-
-	out := make([]GroupBucket, 0, len(buckets))
-	for _, bucket := range buckets {
-		out = append(out, *bucket)
-	}
-	sort.Slice(out, func(i, j int) bool {
-		return stableString(out[i].Values) < stableString(out[j].Values)
-	})
-	return out, nil
-}
-
-func (s *MemoryStore) Events(_ context.Context, filter EventFilter) ([]StateEvent, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	var out []StateEvent
-	for _, key := range s.order {
-		event := s.events[key]
-		if filter.Identity != "" && event.Identity != filter.Identity {
-			continue
-		}
-		out = append(out, event)
-	}
-	if filter.Limit > 0 && len(out) > filter.Limit {
-		out = out[len(out)-filter.Limit:]
+	for _, target := range this.targets {
+		out.Targets.Total++
+		out.Targets.ByStatus[target.WorstStatus]++
 	}
 	return out, nil
 }
 
-func (s *MemoryStore) Targets(_ context.Context) ([]TargetDocument, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+func (this *MemoryStore) Targets(_ context.Context) ([]TargetSummary, error) {
+	this.mu.RLock()
+	defer this.mu.RUnlock()
 
-	out := make([]TargetDocument, 0, len(s.targets))
-	for _, target := range s.targets {
+	out := make([]TargetSummary, 0, len(this.targets))
+	for _, target := range this.targets {
 		out = append(out, target)
 	}
 	sort.Slice(out, func(i, j int) bool {
@@ -444,12 +642,76 @@ func (s *MemoryStore) Targets(_ context.Context) ([]TargetDocument, error) {
 	return out, nil
 }
 
-func (s *MemoryStore) Incidents(_ context.Context, filter IncidentFilter) ([]Incident, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+func (this *MemoryStore) TargetDetail(_ context.Context, key string) (TargetDetail, error) {
+	this.mu.RLock()
+	defer this.mu.RUnlock()
 
-	out := make([]Incident, 0, len(s.incidents))
-	for _, incident := range s.incidents {
+	summary, ok := this.targets[key]
+	if !ok {
+		return TargetDetail{}, fmt.Errorf("target %q: %w", key, ErrNotFound)
+	}
+	out := TargetDetail{TargetSummary: summary, Details: make([]StateDetail, 0, len(summary.States))}
+	for _, header := range summary.States {
+		if detail, ok := this.details[header.Identity]; ok {
+			out.Details = append(out.Details, detail)
+		}
+	}
+	return out, nil
+}
+
+func (this *MemoryStore) StateDetail(_ context.Context, identity string) (StateDetail, error) {
+	this.mu.RLock()
+	defer this.mu.RUnlock()
+
+	detail, ok := this.details[identity]
+	if !ok {
+		return StateDetail{}, fmt.Errorf("state %q: %w", identity, ErrNotFound)
+	}
+	for childIdentity, child := range this.details {
+		if child.ParentIdentity == identity {
+			detail.Children = append(detail.Children, childIdentity)
+		}
+	}
+	sort.Strings(detail.Children)
+	return detail, nil
+}
+
+func (this *MemoryStore) StateTimeline(_ context.Context, identity string) (StateTimeline, error) {
+	this.mu.RLock()
+	defer this.mu.RUnlock()
+
+	out := StateTimeline{Identity: identity, Transitions: []Transition{}}
+	ring := this.timelines[identity]
+	if ring == nil {
+		if _, known := this.details[identity]; !known {
+			return StateTimeline{}, fmt.Errorf("state %q: %w", identity, ErrNotFound)
+		}
+		return out, nil
+	}
+	for i := len(ring.entries) - 1; i >= 0; i-- {
+		out.Transitions = append(out.Transitions, ring.entries[i])
+	}
+	return out, nil
+}
+
+func (this *MemoryStore) Incidents(_ context.Context, filter IncidentFilter) ([]Incident, error) {
+	this.mu.RLock()
+	defer this.mu.RUnlock()
+
+	var candidates []Incident
+	if filter.Source != "" && filter.ID != "" {
+		for identity := range this.incidentIndex[incidentIndexKey(filter.Source, filter.ID)] {
+			candidates = append(candidates, this.incidents[identity])
+		}
+	} else {
+		candidates = make([]Incident, 0, len(this.incidents))
+		for _, incident := range this.incidents {
+			candidates = append(candidates, incident)
+		}
+	}
+
+	out := make([]Incident, 0, len(candidates))
+	for _, incident := range candidates {
 		if filter.Source != "" && incident.Source != filter.Source {
 			continue
 		}
@@ -462,7 +724,7 @@ func (s *MemoryStore) Incidents(_ context.Context, filter IncidentFilter) ([]Inc
 		if filter.Type != "" && incident.Type != filter.Type {
 			continue
 		}
-		incident.Events = sortedIncidentEvents(s.incidentEvents[incident.Identity])
+		incident.Events = sortedIncidentEvents(this.incidentEvents[incident.Identity])
 		out = append(out, incident)
 	}
 	sort.Slice(out, func(i, j int) bool {
@@ -474,16 +736,14 @@ func (s *MemoryStore) Incidents(_ context.Context, filter IncidentFilter) ([]Inc
 	return out, nil
 }
 
-func (s *MemoryStore) AcknowledgeIncident(_ context.Context, source, id string, at time.Time) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+func (this *MemoryStore) AcknowledgeIncident(_ context.Context, source, id string, at time.Time) error {
+	this.mu.Lock()
+	defer this.mu.Unlock()
 	var identity string
 	var incident Incident
 	var ok bool
-	for candidateIdentity, candidate := range s.incidents {
-		if candidate.Source != source || candidate.ID != id {
-			continue
-		}
+	for candidateIdentity := range this.incidentIndex[incidentIndexKey(source, id)] {
+		candidate := this.incidents[candidateIdentity]
 		if !ok || candidate.CreatedAt.After(incident.CreatedAt) {
 			identity = candidateIdentity
 			incident = candidate
@@ -498,14 +758,43 @@ func (s *MemoryStore) AcknowledgeIncident(_ context.Context, source, id string, 
 		at = time.Now()
 	}
 	incident.ObservedAt = at
-	s.incidents[identity] = incident
+	this.incidents[identity] = incident
 	return nil
 }
 
+// transitionRing holds one identity's transitions in ascending changed_at
+// order, bounded by the per-identity cap.
+type transitionRing struct {
+	entries []Transition
+}
+
+// add merges a transition into the ring unless an entry with the same
+// changed_at and status exists, then trims to ringCap. It reports whether the
+// transition was inserted and how many old entries the trim dropped.
+func (this *transitionRing) add(transition Transition, ringCap int) (added bool, dropped int) {
+	for _, entry := range this.entries {
+		if entry.ChangedAt.Equal(transition.ChangedAt) && entry.Status == transition.Status {
+			return false, 0
+		}
+	}
+	insertAt := len(this.entries)
+	for insertAt > 0 && this.entries[insertAt-1].ChangedAt.After(transition.ChangedAt) {
+		insertAt--
+	}
+	this.entries = append(this.entries, Transition{})
+	copy(this.entries[insertAt+1:], this.entries[insertAt:])
+	this.entries[insertAt] = transition
+	if len(this.entries) > ringCap {
+		dropped = len(this.entries) - ringCap
+		this.entries = append([]Transition(nil), this.entries[dropped:]...)
+	}
+	return true, dropped
+}
+
 type flattenedState struct {
-	Node    StateNode
-	Current CurrentObservation
-	Event   StateEvent
+	Detail      StateDetail
+	Transitions []Transition // ascending by changed_at
+	Path        []string
 }
 
 func flattenDocument(doc statekit.StateDisplayDocument, observedAt time.Time) []flattenedState {
@@ -532,65 +821,98 @@ func flattenSnapshot(labelPath []statekit.StateDisplayLabel, path []string, pare
 	nowLabels := cloneLabels(labels)
 	groupName := nowLabels["group_name"]
 	data := cloneData(snap.Data)
-	metadataHash := hashJSON(map[string]any{
-		"parent_identity": parentIdentity,
-		"name":            snap.Name,
-		"scraped_from":    scrapedFrom,
-		"scrape_path":     scrapePath,
-		"importance":      snap.Importance.String(),
-		"help":            snap.Help,
-		"group_name":      groupName,
-		"labels":          nowLabels,
-	})
-	eventKey := hashJSON(map[string]any{
-		"identity":   identity,
-		"changed_at": snap.ChangedAt,
-		"updated_at": snap.UpdatedAt,
-		"status":     snap.Status.String(),
-		"reason":     snap.Reason,
-	})
+	changedAt := snap.ChangedAt
+	if changedAt.IsZero() {
+		changedAt = observedAt
+	}
 	entry := flattenedState{
-		Node: StateNode{
-			Identity:       identity,
-			ParentIdentity: parentIdentity,
-			Name:           snap.Name,
-			ScrapedFrom:    scrapedFrom,
-			ScrapePath:     scrapePath,
-			Importance:     snap.Importance.String(),
-			Help:           snap.Help,
-			GroupName:      groupName,
-			LabelPath:      append([]statekit.StateDisplayLabel(nil), labelPath...),
-			Labels:         nowLabels,
-			FirstSeenAt:    observedAt,
-			LastSeenAt:     observedAt,
-			MetadataHash:   metadataHash,
+		Detail: StateDetail{
+			StateHeader: StateHeader{
+				Identity:       identity,
+				ParentIdentity: parentIdentity,
+				Name:           snap.Name,
+				Status:         snap.Status.String(),
+				Reason:         snap.Reason,
+				Importance:     snap.Importance.String(),
+				ChangedAt:      changedAt,
+			},
+			ScrapedFrom: scrapedFrom,
+			ScrapePath:  scrapePath,
+			Help:        snap.Help,
+			GroupName:   groupName,
+			Labels:      nowLabels,
+			LabelPath:   append([]statekit.StateDisplayLabel(nil), labelPath...),
+			Data:        data,
+			DataHash:    hashJSON(data),
+			UpdatedAt:   snap.UpdatedAt,
+			ObservedAt:  observedAt,
+			FirstSeenAt: observedAt,
+			LastSeenAt:  observedAt,
 		},
-		Current: CurrentObservation{
-			Identity:       identity,
-			Status:         snap.Status.String(),
-			Reason:         snap.Reason,
-			ChangedAt:      snap.ChangedAt,
-			ChangedSecsAgo: snap.ChangedSecsAgo,
-			UpdatedAt:      snap.UpdatedAt,
-			UpdatedSecsAgo: snap.UpdatedSecsAgo,
-			ObservedAt:     observedAt,
-			Data:           data,
-			DataHash:       hashJSON(data),
-		},
-		Event: StateEvent{
-			EventKey:   eventKey,
-			Identity:   identity,
-			Status:     snap.Status.String(),
-			Reason:     snap.Reason,
-			ChangedAt:  snap.ChangedAt,
-			UpdatedAt:  snap.UpdatedAt,
-			ObservedAt: observedAt,
-			Data:       data,
-		},
+		Transitions: snapshotTransitions(snap, changedAt),
+		Path:        statePath,
 	}
 	out := []flattenedState{entry}
 	for _, child := range snap.Checks {
 		out = append(out, flattenSnapshot(labelPath, statePath, identity, nowLabels, scrapedFrom, scrapePath, child, observedAt)...)
+	}
+	return out
+}
+
+// snapshotTransitions extracts real transitions from a snapshot: its bounded
+// History plus the observed changed_at boundary. An unchanged state yields
+// the same transitions on every scrape, so ingest dedup holds by
+// construction.
+func snapshotTransitions(snap statekit.Snapshot, changedAt time.Time) []Transition {
+	out := make([]Transition, 0, len(snap.History)+1)
+	// History is newest-first; walk backwards to build ascending order.
+	for i := len(snap.History) - 1; i >= 0; i-- {
+		entry := snap.History[i]
+		if entry.Timestamp.IsZero() {
+			continue
+		}
+		out = appendTransition(out, Transition{
+			ChangedAt: entry.Timestamp,
+			Status:    entry.Status.String(),
+			Reason:    entry.Reason,
+		})
+	}
+	return appendTransition(out, Transition{
+		ChangedAt: changedAt,
+		Status:    snap.Status.String(),
+		Reason:    snap.Reason,
+	})
+}
+
+func appendTransition(transitions []Transition, transition Transition) []Transition {
+	for _, existing := range transitions {
+		if existing.ChangedAt.Equal(transition.ChangedAt) && existing.Status == transition.Status {
+			return transitions
+		}
+	}
+	return append(transitions, transition)
+}
+
+// triggeringStates lists the non-pass states of an ingested document for the
+// charting store. Label is the display name captured at write time so chart
+// reads never join against the current layers.
+func triggeringStates(entries []flattenedState) []TriggeringState {
+	var out []TriggeringState
+	for _, entry := range entries {
+		if entry.Detail.Status == statekit.Pass.String() {
+			continue
+		}
+		targetKey, targetName, _ := targetIdentity(entry.Detail)
+		label := strings.Join(entry.Path, "/")
+		if targetName != "" {
+			label = targetName + ":" + label
+		}
+		out = append(out, TriggeringState{
+			Identity:  entry.Detail.Identity,
+			TargetKey: targetKey,
+			Label:     label,
+			Status:    entry.Detail.Status,
+		})
 	}
 	return out
 }
@@ -657,43 +979,6 @@ func firstNonEmpty(values ...string) string {
 	return ""
 }
 
-func matchesFilter(item CurrentState, filter CurrentFilter) bool {
-	if filter.Status != "" && item.Observation.Status != filter.Status {
-		return false
-	}
-	if filter.GroupName != "" && item.GroupName != filter.GroupName {
-		return false
-	}
-	for k, v := range filter.Labels {
-		if item.Labels[k] != v {
-			return false
-		}
-	}
-	return true
-}
-
-func groupValues(item CurrentState, by []string) map[string]string {
-	values := map[string]string{}
-	for _, key := range by {
-		switch {
-		case key == "group_name":
-			values[key] = item.GroupName
-		case key == "status":
-			values[key] = item.Observation.Status
-		case key == "importance":
-			values[key] = item.Importance
-		case key == "scraped_from":
-			values[key] = item.ScrapedFrom
-		case strings.HasPrefix(key, "label:"):
-			name := strings.TrimPrefix(key, "label:")
-			values[key] = item.Labels[name]
-		default:
-			values[key] = item.Labels[key]
-		}
-	}
-	return values
-}
-
 func cloneLabels(in map[string]string) map[string]string {
 	if len(in) == 0 {
 		return nil
@@ -757,14 +1042,6 @@ func parseIncidentSeq(seq string) (uint64, error) {
 		seq = after
 	}
 	return strconv.ParseUint(seq, 10, 64)
-}
-
-func stableString(value any) string {
-	data, err := json.Marshal(value)
-	if err != nil {
-		return fmt.Sprint(value)
-	}
-	return string(data)
 }
 
 func hashJSON(value any) string {

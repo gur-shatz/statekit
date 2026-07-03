@@ -1,5 +1,10 @@
 // statekit fleet state console — client logic.
-// Pure consumer of the storage JSON API exposed at window.STATEKIT_API_BASE.
+// Pure consumer of the storage layer API exposed at window.STATEKIT_API_BASE:
+// the 5s tick polls L1 (/state/targets) and the charting store
+// (/state/timeline); selecting a target fetches its L2 document
+// (/state/targets/{key}, revalidated by its material_hash ETag); the detail
+// pane fetches the L3 transition ring per identity; sparkline hovers fetch
+// per-bucket contributors lazily.
 
 const apiBase = window.STATEKIT_API_BASE || "/api";
 const statusOrder = ["pass", "warn", "fail", "down"];
@@ -8,20 +13,20 @@ const NB = 64; // sparkline buckets
 
 const state = {
   view: "fleet", // "fleet" | "overview"
-  projectionMode: "server",
   selectedTarget: "",
   selectedIdentity: "",
   incidentFilter: "active",
   windowMs: 60 * 60 * 1000,
   hoverIdx: null,
   updatedAt: "",
-  current: [],
-  events: [],
   targets: [],
   incidents: [],
-  byId: new Map(),
+  chart: [], // BucketCounts[] from /state/timeline
+  detail: null, // TargetDetail of the selected target
+  byId: new Map(), // identity -> StateDetail, selected target only
   childrenByParent: new Map(),
-  eventsByIdentity: new Map(),
+  history: [], // transitions of the selected identity, newest first
+  bucketTips: new Map(), // bucket time -> contributors from /state/timeline/bucket
 };
 
 const $ = (id) => document.getElementById(id);
@@ -46,148 +51,123 @@ function pill(status, xs) {
   return `<span class="pill ${xs ? "xs " : ""}${s}"><span class="dot"></span>${s.toUpperCase()}</span>`;
 }
 
+// Conditional GET cache: every layer endpoint sets a strong ETag, so the
+// steady-state poll is one small L1 body plus 304s.
+const etagCache = new Map(); // path -> {etag, data}
+
 async function fetchJSON(path) {
-  const res = await fetch(`${apiBase}${path}`, { headers: { Accept: "application/json" } });
+  const cached = etagCache.get(path);
+  const headers = { Accept: "application/json" };
+  if (cached?.etag) headers["If-None-Match"] = cached.etag;
+  const res = await fetch(`${apiBase}${path}`, { headers });
+  if (res.status === 304 && cached) return cached.data;
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
-  return res.json();
+  const data = await res.json();
+  const etag = res.headers.get("ETag");
+  if (etag) etagCache.set(path, { etag, data });
+  return data;
 }
 
 // ---------- data load ----------
 
+function chartPath() {
+  return `/state/timeline?scope=fleet&window=${Math.round(state.windowMs / 1000)}s&buckets=${NB}`;
+}
+
 async function refresh() {
-  const [current, events, serverTargets, incidents] = await Promise.all([
-    fetchJSON("/state/current"),
-    fetchJSON("/state/events?limit=500"),
+  const [targets, incidents, chart] = await Promise.all([
     fetchJSON("/state/targets"),
     fetchJSON("/escalations/incidents"),
+    fetchJSON(chartPath()),
   ]);
-  state.current = current || [];
-  state.events = events || [];
+  state.targets = normalizeTargets(targets);
   state.incidents = incidents || [];
-  state.targets = state.projectionMode === "server"
-    ? normalizeServerTargets(serverTargets)
-    : buildTargets(state.current);
-
-  indexCurrent();
-  indexEvents();
+  state.chart = chart || [];
+  state.bucketTips = new Map();
 
   if (!state.selectedTarget || !state.targets.some((t) => t.key === state.selectedTarget)) {
     state.selectedTarget = state.targets[0]?.key || "";
+    state.selectedIdentity = "";
   }
-  ensureSelection();
+  await loadSelection();
   state.updatedAt = new Date().toLocaleTimeString();
   render();
 }
 
-function indexCurrent() {
-  state.byId = new Map();
-  state.childrenByParent = new Map();
-  state.current.forEach((item) => {
-    state.byId.set(item.identity, item);
-    const parent = item.parent_identity || "";
-    if (!state.childrenByParent.has(parent)) state.childrenByParent.set(parent, []);
-    state.childrenByParent.get(parent).push(item);
-  });
-}
-
-function indexEvents() {
-  state.eventsByIdentity = new Map();
-  state.events.forEach((event) => {
-    const t = Date.parse(event.observed_at || event.changed_at || "");
-    if (Number.isNaN(t)) return;
-    const list = state.eventsByIdentity.get(event.identity) || [];
-    list.push({ t, status: event.status || "pass", reason: event.reason || "" });
-    state.eventsByIdentity.set(event.identity, list);
-  });
-  state.eventsByIdentity.forEach((list) => list.sort((a, b) => a.t - b.t));
-}
-
-function normalizeServerTargets(items) {
-  return (items || []).map((item) => ({
-    key: item.key,
-    name: item.name,
-    scrapePath: item.scrape_path || item.name,
-    labels: item.labels || {},
-    states: (item.states || []).map(normalizeServerState),
-    counts: countsOf(item.status_counts),
-    worstStatus: item.worst_status || "pass",
-    observedAt: item.observed_at || "",
-  })).map(attachAffected).sort(compareTargets);
-}
-
-function normalizeServerState(item) {
-  return {
-    identity: item.identity,
-    name: item.name,
-    group_name: item.group_name || "",
-    labels: item.labels || {},
-    observation: {
-      status: item.status || "pass",
-      reason: item.reason || "",
-      changed_at: item.changed_at || "",
-      changed_secs_ago: secondsSince(item.changed_at),
-      observed_at: item.observed_at || "",
-      data: item.data || {},
-    },
-    checks: (item.checks || []).map(normalizeServerCheck),
-  };
-}
-
-function normalizeServerCheck(item) {
-  return {
-    identity: item.identity,
-    name: item.name,
-    observation: {
-      status: item.status || "pass",
-      reason: item.reason || "",
-      changed_secs_ago: secondsSince(item.changed_at),
-    },
-  };
-}
-
-// buildTargets derives targets client-side straight from the flattened current
-// states, mirroring the server projection shape.
-function buildTargets(items) {
-  const byID = new Map(items.map((item) => [item.identity, item]));
-  const groups = new Map();
-  items.forEach((item) => {
-    const name = item.scraped_from || item.labels?.target_id || "";
-    if (!name) return;
-    const scrapePath = item.scrape_path || name;
-    const key = `${name}\n${scrapePath}`;
-    const group = groups.get(key) || {
-      key, name, scrapePath, labels: {}, states: [], childrenByParent: new Map(),
-      counts: { pass: 0, warn: 0, fail: 0, down: 0 }, worstStatus: "pass", observedAt: "",
+// normalizeTargets shapes L1 TargetSummary rows for rendering: the flat
+// StateHeaders become top-level states with their checks attached, and each
+// affected state is resolved back to its header identity.
+function normalizeTargets(items) {
+  return (items || []).map((item) => {
+    const headers = item.states || [];
+    const inTarget = new Set(headers.map((h) => h.identity));
+    const checksByParent = new Map();
+    const roots = [];
+    headers.forEach((h) => {
+      if (h.parent_identity && inTarget.has(h.parent_identity)) {
+        const list = checksByParent.get(h.parent_identity) || [];
+        list.push(h);
+        checksByParent.set(h.parent_identity, list);
+      } else {
+        roots.push(h);
+      }
+    });
+    const states = roots.map((h) => ({ ...h, checks: checksByParent.get(h.identity) || [] }));
+    return {
+      key: item.key,
+      name: item.name,
+      scrapePath: item.scrape_path || item.name,
+      labels: item.labels || {},
+      counts: countsOf(item.status_counts),
+      worstStatus: item.worst_status || "pass",
+      observedAt: item.observed_at || "",
+      states,
+      allStates: headers,
+      affectedStates: (item.affected_states || []).map((a) => ({
+        ...a,
+        identity: roots.find((r) => r.name === a.name)?.identity || "",
+      })),
     };
-    groups.set(key, group);
-
-    const parent = byID.get(item.parent_identity);
-    if (parent && (parent.scraped_from || "") === name) {
-      const kids = group.childrenByParent.get(item.parent_identity) || [];
-      kids.push(item);
-      group.childrenByParent.set(item.parent_identity, kids);
-      return;
-    }
-    group.states.push(item);
-    group.labels = { ...group.labels, ...(item.labels || {}) };
-    const status = item.observation?.status || "pass";
-    group.counts[status] = (group.counts[status] || 0) + 1;
-    if (rank(status) > rank(group.worstStatus)) group.worstStatus = status;
-  });
-
-  return [...groups.values()].map((group) => {
-    group.states.forEach((s) => { s.checks = group.childrenByParent.get(s.identity) || []; });
-    group.states.sort((a, b) => compareStatus(a.observation, b.observation) || a.name.localeCompare(b.name));
-    return attachAffected(group);
   }).sort(compareTargets);
+}
+
+// loadSelection fetches the selected target's L2 detail and the selected
+// identity's L3 timeline. The detail request carries the last material_hash
+// as If-None-Match, so an unchanged target costs a 304.
+async function loadSelection() {
+  const target = selectedTarget();
+  if (!target) {
+    state.detail = null;
+    state.byId = new Map();
+    state.childrenByParent = new Map();
+    state.history = [];
+    state.selectedIdentity = "";
+    return;
+  }
+  const detail = await fetchJSON(`/state/targets/${encodeURIComponent(target.key)}`);
+  state.detail = detail;
+  state.byId = new Map((detail.details || []).map((d) => [d.identity, d]));
+  state.childrenByParent = new Map();
+  (detail.details || []).forEach((d) => {
+    const parent = d.parent_identity || "";
+    if (!state.childrenByParent.has(parent)) state.childrenByParent.set(parent, []);
+    state.childrenByParent.get(parent).push(d);
+  });
+  ensureSelection();
+  await loadHistory();
+}
+
+async function loadHistory() {
+  if (!state.selectedIdentity) {
+    state.history = [];
+    return;
+  }
+  const timeline = await fetchJSON(`/state/states/${encodeURIComponent(state.selectedIdentity)}/timeline`);
+  state.history = timeline?.transitions || [];
 }
 
 function countsOf(sc) {
   return { pass: sc?.pass || 0, warn: sc?.warn || 0, fail: sc?.fail || 0, down: sc?.down || 0 };
-}
-function attachAffected(target) {
-  target.affectedStates = target.states.filter((s) => (s.observation?.status || "pass") !== "pass");
-  return target;
 }
 function compareTargets(a, b) {
   return (rank(b.worstStatus) - rank(a.worstStatus)) || a.name.localeCompare(b.name);
@@ -205,35 +185,19 @@ function selectedTarget() {
 function ensureSelection() {
   const target = selectedTarget();
   if (!target) { state.selectedIdentity = ""; return; }
-  const ids = new Set(target.states.map((s) => s.identity));
-  if (state.selectedIdentity && ids.has(state.selectedIdentity)) return;
-  if (state.selectedIdentity && state.byId.has(state.selectedIdentity)) {
-    // keep a deeper node only if it still belongs to this target
-    if (targetKeyOf(state.selectedIdentity) === target.key) return;
-  }
-  const worst = target.states.slice().sort((a, b) => compareStatus(a.observation, b.observation))[0];
+  if (state.selectedIdentity && state.byId.has(state.selectedIdentity)) return;
+  const worst = target.states.slice().sort(compareStatus)[0];
   state.selectedIdentity = worst?.identity || "";
 }
 
-function targetKeyOf(identity) {
-  let node = state.byId.get(identity);
-  while (node && node.parent_identity && state.byId.has(node.parent_identity)) {
-    node = state.byId.get(node.parent_identity);
-  }
-  if (!node) return "";
-  const name = node.scraped_from || node.labels?.target_id || "";
-  return `${name}\n${node.scrape_path || name}`;
-}
-
-function selectTarget(key) {
+function selectTarget(key, identity) {
   state.selectedTarget = key;
-  state.selectedIdentity = "";
-  ensureSelection();
-  render();
+  state.selectedIdentity = identity || "";
+  loadSelection().then(render).then(clearError).catch(showError);
 }
 function selectIdentity(identity) {
   state.selectedIdentity = identity;
-  render();
+  loadHistory().then(render).then(clearError).catch(showError);
 }
 
 // ---------- render ----------
@@ -268,95 +232,31 @@ function renderHeader() {
 
 function updateClock() {
   const z = new Date().toISOString().slice(11, 19);
-  const ctx = `${state.targets.length} targets · ${state.projectionMode}`;
-  $("clock").innerHTML = `<b>${z}Z</b> · updated <b>${esc(state.updatedAt || "—")}</b> · ${esc(ctx)}`;
+  $("clock").innerHTML = `<b>${z}Z</b> · updated <b>${esc(state.updatedAt || "—")}</b> · ${state.targets.length} targets`;
 }
 
 // ---------- sparkline ----------
 
-// contributors returns one entry per target — the same unit the fleet rail and
-// overview counts use. A target is degraded when any node scraped from it is,
-// so the chart plots the count of warn/fail *targets* over time (not raw event
-// counts, and not leaf states, which would disagree with the counts elsewhere).
-// contributors returns one entry per failing unit the chart plots. It keeps the
-// leaf states that belong to a target: the real checks (database, cache, .up)
-// and each target's own "health" rollup. It drops two kinds of node the same
-// failure would otherwise echo through: component-root aggregates (they own
-// sub-checks, so they have children) and the top-level fleet health (no target,
-// not surfaced anywhere else in the UI).
-function contributors() {
-  return state.current
-    .filter((node) => {
-      const kids = state.childrenByParent.get(node.identity);
-      const isLeaf = !kids || kids.length === 0;
-      const target = node.scraped_from || node.labels?.target_id || "";
-      return isLeaf && target !== "";
-    })
-    .map((node) => ({
-      identity: node.identity,
-      name: node.name,
-      target: node.scraped_from || node.labels?.target_id,
-      status: node.observation?.status || "pass",
-    }));
-}
-
-function statusAt(identity, tAbs) {
-  const list = state.eventsByIdentity.get(identity);
-  if (!list || !list.length) {
-    const node = state.byId.get(identity);
-    const changed = Date.parse(node?.observation?.changed_at || "");
-    if (!Number.isNaN(changed) && changed <= tAbs) return node?.observation?.status || "pass";
-    return "pass";
-  }
-  let status = "pass";
-  for (const e of list) {
-    if (e.t <= tAbs) status = e.status;
-    else break;
-  }
-  return status;
-}
-
-// worstInInterval returns the worst status a state held at any point during
-// [lo, hi]: the status it carried entering the bucket, raised by any transition
-// that landed inside it. Sampling the whole interval (rather than a single
-// center point) keeps brief transitions from being aliased away between samples.
-function worstInInterval(identity, lo, hi) {
-  let worst = statusAt(identity, lo);
-  const list = state.eventsByIdentity.get(identity);
-  if (list) {
-    for (const e of list) {
-      if (e.t > lo && e.t <= hi && rank(e.status) > rank(worst)) worst = e.status;
-    }
-  }
-  return worst;
-}
-
-function buildBuckets(now) {
-  const W = state.windowMs;
-  const step = W / NB;
-  const contrib = contributors();
-  const buckets = Array.from({ length: NB }, () => ({ warn: 0, fail: 0, active: [] }));
-  for (let i = 0; i < NB; i++) {
-    const lo = now - (W - i * step);
-    const hi = now - (W - (i + 1) * step);
-    contrib.forEach((c) => {
-      const st = worstInInterval(c.identity, lo, hi);
-      if (st === "pass") return;
-      if (st === "fail" || st === "down") buckets[i].fail++;
-      else buckets[i].warn++;
-      buckets[i].active.push({ target: c.target, name: c.name, st });
-    });
-  }
-  return buckets;
+// The chart plots the charting store's bucketed triggering-state counts
+// directly; fail and down are stacked together as "fail".
+function chartBuckets() {
+  return state.chart.map((b) => ({
+    t: Date.parse(b.t || ""),
+    warn: b.counts?.warn || 0,
+    fail: (b.counts?.fail || 0) + (b.counts?.down || 0),
+  }));
 }
 
 function renderSparkline() {
   const now = Date.now();
   const W = state.windowMs;
-  const buckets = buildBuckets(now);
-  const contrib = contributors();
-  const errWarn = contrib.filter((c) => c.status === "warn").length;
-  const errFail = contrib.filter((c) => c.status === "fail" || c.status === "down").length;
+  const buckets = chartBuckets();
+  let errWarn = 0;
+  let errFail = 0;
+  state.targets.forEach((t) => t.allStates.forEach((h) => {
+    if (h.status === "warn") errWarn++;
+    else if (h.status === "fail" || h.status === "down") errFail++;
+  }));
   const errorMax = Math.max(1, ...buckets.map((b) => b.warn + b.fail));
   const cellH = 100 / errorMax;
 
@@ -372,12 +272,22 @@ function renderSparkline() {
     return `<div class="sparkCol" data-idx="${i}">${cells}${base}</div>`;
   }).join("");
 
-  const axis = [];
-  for (let i = 0; i < 7; i++) axis.push(hhmm(now - (W - i * (W / 6)) - W + W)); // even ticks across window
   $("sparkAxis").innerHTML = Array.from({ length: 7 }, (_, i) =>
     `<span>${hhmm(now - W + i * (W / 6))}</span>`).join("");
 
   renderSparkTip(buckets, now);
+}
+
+// loadBucketTip lazily fetches the triggering states behind one hovered
+// bucket from the charting store's bucket endpoint.
+async function loadBucketTip(idx) {
+  const bucket = state.chart[idx];
+  if (!bucket?.t) return [];
+  if (state.bucketTips.has(bucket.t)) return state.bucketTips.get(bucket.t);
+  const center = Date.parse(bucket.t) + state.windowMs / NB / 2;
+  const list = await fetchJSON(`/state/timeline/bucket?scope=fleet&t=${encodeURIComponent(new Date(center).toISOString())}`);
+  state.bucketTips.set(bucket.t, list || []);
+  return list || [];
 }
 
 function renderSparkTip(buckets, now) {
@@ -390,11 +300,17 @@ function renderSparkTip(buckets, now) {
   const leftPct = (hi + 0.5) / NB * 100;
   const tf = leftPct < 16 ? "translateX(-10px)" : (leftPct > 84 ? "translateX(calc(-100% + 10px))" : "translateX(-50%)");
   const clear = bk.warn + bk.fail === 0;
-  const rowsRaw = bk.active.slice().sort((a, b) => rank(b.st) - rank(a.st));
+
+  const contributors = state.bucketTips.get(state.chart[hi]?.t);
+  if (!clear && contributors === undefined) {
+    loadBucketTip(hi).then(() => {
+      if (state.hoverIdx === hi) renderSparkline();
+    }).catch(() => {});
+  }
+  const rowsRaw = (contributors || []).slice().sort((a, b) => rank(b.status) - rank(a.status));
   const rows = rowsRaw.slice(0, 6).map((r) => {
-    const color = r.st === "warn" ? "#e3b341" : "#ff7b72";
-    const label = r.target && r.target !== r.name ? `<span class="t">${esc(r.target)}:</span>${esc(r.name)}` : esc(r.name);
-    return `<div class="rowline"><span class="dot" style="background:${color};box-shadow:0 0 5px ${color};"></span><span class="truncate">${label}</span></div>`;
+    const color = r.status === "warn" ? "#e3b341" : "#ff7b72";
+    return `<div class="rowline"><span class="dot" style="background:${color};box-shadow:0 0 5px ${color};"></span><span class="truncate">${esc(r.label)}</span></div>`;
   }).join("");
   const more = rowsRaw.length > 6 ? `<div class="more">+${rowsRaw.length - 6} more</div>` : "";
   const body = clear
@@ -423,8 +339,8 @@ function renderRail() {
       `<span class="countChip ${s}">${target.counts[s]} ${s === "pass" ? "OK" : s.toUpperCase()}</span>`).join("");
     const issues = target.affectedStates.length
       ? target.affectedStates.map((s) => {
-          const st = s.observation?.status || "pass";
-          return `<span class="issueChip ${statusClass(st)}" data-identity="${esc(s.identity)}" title="${esc(s.name)}: ${esc(st)}">${esc(s.name)}: ${esc(st)}</span>`;
+          const st = statusClass(s.status);
+          return `<span class="issueChip ${st}" data-identity="${esc(s.identity)}" title="${esc(s.name)}: ${esc(st)}">${esc(s.name)}: ${esc(st)}</span>`;
         }).join("")
       : `<span class="allOk">all states OK</span>`;
     return `<div class="trow ${sel ? "sel " + statusClass(target.worstStatus) : ""}" data-target="${esc(target.key)}">
@@ -454,32 +370,28 @@ function renderStates() {
   $("statesRollup").textContent = `${total} · ` +
     [`${c.pass} ok`, c.warn ? `${c.warn} warn` : "", (c.fail + c.down) ? `${c.fail + c.down} fail` : ""].filter(Boolean).join(" · ");
 
-  $("states").innerHTML = target.states.map((s) => stateCard(s)).join("") ||
+  $("states").innerHTML = target.states.map((s) => stateCard(target, s)).join("") ||
     `<div class="empty">No states for this target</div>`;
 }
 
-function stateCard(s) {
-  const obs = s.observation || {};
-  const st = statusClass(obs.status);
+function stateCard(target, s) {
+  const st = statusClass(s.status);
   const sel = s.identity === state.selectedIdentity;
   const cls = ["scard", st !== "pass" ? st : "", sel ? "sel" : ""].filter(Boolean).join(" ");
-  const reason = obs.reason ? `<div class="reason truncate" title="${esc(obs.reason)}">${esc(obs.reason)}</div>` : "";
-  const checks = (s.checks || []).slice().sort((a, b) => compareStatus(a.observation, b.observation));
-  const checkRows = checks.map((c) => {
-    const co = c.observation || {};
-    return `<div class="checkRow" data-identity="${esc(c.identity)}">
-      ${pill(co.status, true)}
+  const reason = s.reason ? `<div class="reason truncate" title="${esc(s.reason)}">${esc(s.reason)}</div>` : "";
+  const checks = (s.checks || []).slice().sort(compareStatus);
+  const checkRows = checks.map((c) => `<div class="checkRow" data-identity="${esc(c.identity)}">
+      ${pill(c.status, true)}
       <div style="min-width:0;">
         <div class="cname">${esc(c.name)}</div>
-        ${co.reason ? `<div class="creason">${esc(co.reason)}</div>` : ""}
+        ${c.reason ? `<div class="creason">${esc(c.reason)}</div>` : ""}
       </div>
-      <span class="dur">${esc(formatAge(co.changed_secs_ago))}</span>
-    </div>`;
-  }).join("");
+      <span class="dur">${esc(formatAge(secondsSince(c.changed_at)))}</span>
+    </div>`).join("");
   return `<article class="${cls}" data-state="${esc(s.identity)}">
-    <div class="top">${pill(obs.status, true)}<span class="sname">${esc(s.name)}</span></div>
+    <div class="top">${pill(s.status, true)}<span class="sname">${esc(s.name)}</span></div>
     ${reason}
-    <div class="meta">changed ${esc(formatAge(obs.changed_secs_ago))} ago<span class="sep"> · </span>observed ${esc(formatTime(obs.observed_at))}</div>
+    <div class="meta">changed ${esc(formatAge(secondsSince(s.changed_at)))} ago<span class="sep"> · </span>observed ${esc(formatTime(target.observedAt))}</div>
     ${checkRows ? `<div class="checks">${checkRows}</div>` : ""}
   </article>`;
 }
@@ -514,36 +426,42 @@ function renderDetail() {
       (last ? "" : `<span class="crumbSep">/</span>`);
   }).join("");
 
-  const obs = node.observation || {};
-  const st = statusClass(obs.status);
+  const st = statusClass(node.status);
   const info = (node.importance || "").toLowerCase() === "informational";
-  const children = (state.childrenByParent.get(node.identity) || []).slice()
-    .sort((a, b) => compareStatus(a.observation, b.observation));
-  const history = (state.eventsByIdentity.get(node.identity) || []).slice().reverse();
+  const children = (state.childrenByParent.get(node.identity) || []).slice().sort(compareStatus);
+  const history = state.history;
 
   const parts = [];
-  parts.push(`<div class="detailTitle">${pill(obs.status)}<h2>${esc(node.name)}</h2>${info ? `<span class="infoBadge">INFORMATIONAL</span>` : ""}</div>`);
+  parts.push(`<div class="detailTitle">${pill(node.status)}<h2>${esc(node.name)}</h2>${info ? `<span class="infoBadge">INFORMATIONAL</span>` : ""}</div>`);
   parts.push(`<div class="detailMeta">
-    <span>updated <b>${esc(formatAge(secsAgo(obs.updated_secs_ago, obs.observed_at)))} ago</b></span>
-    <span>changed <b>${esc(formatAge(obs.changed_secs_ago))} ago</b></span>
+    <span>updated <b>${esc(formatAge(secondsSince(node.updated_at || node.observed_at)))} ago</b></span>
+    <span>changed <b>${esc(formatAge(secondsSince(node.changed_at)))} ago</b></span>
   </div>`);
   if (node.help) parts.push(`<div class="detailHelp">${esc(node.help)}</div>`);
-  if (obs.reason) {
+  if (node.reason) {
     const rc = st !== "pass" ? st : "neutral";
-    parts.push(`<div class="detailReason ${rc}">${esc(obs.reason)}</div>`);
+    parts.push(`<div class="detailReason ${rc}">${esc(node.reason)}</div>`);
   }
 
-  const dataRows = flattenData(obs.data || {});
-  if (dataRows.length) {
+  const labels = stateLabels(node);
+  if (labels.length) {
+    parts.push(`<div class="detailSection">
+      <div class="subKicker" style="margin-bottom:9px;">LABELS</div>
+      <div class="detailLabels">${labels.map(([k, v]) => `<span class="labelChip">${esc(k)}=${esc(v)}</span>`).join("")}</div>
+    </div>`);
+  }
+
+  const yaml = stateDataYAML(node);
+  if (yaml) {
     parts.push(`<div class="detailSection">
       <div class="subKicker" style="margin-bottom:9px;">DATA</div>
-      <div class="dataBlock">${dataRows.map(dataRowHTML).join("")}</div>
+      <div class="dataBlock"><pre class="dataYaml">${highlightYAML(yaml)}</pre></div>
     </div>`);
   }
 
   if (children.length) {
     const cc = { pass: 0, warn: 0, fail: 0, down: 0 };
-    children.forEach((c) => { cc[c.observation?.status || "pass"]++; });
+    children.forEach((c) => { cc[statusClass(c.status)]++; });
     const roll = `${children.length} checks · ` +
       [`${cc.pass} pass`, cc.warn ? `${cc.warn} warn` : "", (cc.fail + cc.down) ? `${cc.fail + cc.down} fail` : ""].filter(Boolean).join(", ");
     parts.push(`<div class="detailSection">
@@ -563,56 +481,131 @@ function renderDetail() {
 }
 
 function childRowHTML(c) {
-  const co = c.observation || {};
-  const st = statusClass(co.status);
+  const st = statusClass(c.status);
   const kids = (state.childrenByParent.get(c.identity) || []).length;
   const chevron = kids > 0 ? `${kids} ›` : "›";
   return `<div class="childRow ${st !== "pass" ? st : ""}" data-identity="${esc(c.identity)}">
     <div style="min-width:0;flex:1;">
-      <div class="top">${pill(co.status, true)}<span class="cname">${esc(c.name)}</span></div>
-      ${co.reason ? `<div class="creason">${esc(co.reason)}</div>` : ""}
+      <div class="top">${pill(c.status, true)}<span class="cname">${esc(c.name)}</span></div>
+      ${c.reason ? `<div class="creason">${esc(c.reason)}</div>` : ""}
     </div>
     <span class="chev">${esc(chevron)}</span>
   </div>`;
 }
 
-function historyRowHTML(e) {
-  const st = statusClass(e.status);
+function historyRowHTML(transition) {
+  const t = Date.parse(transition.changed_at || "");
   return `<div class="histRow">
-    <div class="histTime"><div class="rel">${esc(relFromMs(e.t, Date.now()))}</div><div class="abs">${clock(e.t)}Z</div></div>
-    <div class="histRail"><span class="dot ${st}"></span></div>
-    <div class="histText">${pill(e.status, true)}${e.reason ? `<div class="histReason">${esc(e.reason)}</div>` : ""}</div>
+    <div class="histTime"><div class="rel">${esc(relFromMs(t, Date.now()))}</div><div class="abs">${clock(t)}Z</div></div>
+    <div class="histRail"><span class="dot ${statusClass(transition.status)}"></span></div>
+    <div class="histText">${pill(transition.status, true)}${transition.reason ? `<div class="histReason">${esc(transition.reason)}</div>` : ""}</div>
   </div>`;
 }
 
-// flattenData renders a nested data object into indented key/value rows.
-function flattenData(obj) {
-  const rows = [];
-  const walk = (k, v, ind) => {
-    if (Array.isArray(v)) {
-      rows.push({ k, v: `[${v.length}]`, ind, header: true });
-      v.forEach((it, i) => {
-        if (it && typeof it === "object") {
-          rows.push({ k: `– ${i}`, v: "", ind: ind + 1, header: true });
-          Object.entries(it).forEach(([k2, v2]) => walk(k2, v2, ind + 2));
-        } else rows.push({ k: `– ${i}`, v: String(it), ind: ind + 1 });
-      });
-    } else if (v && typeof v === "object") {
-      rows.push({ k, v: "", ind, header: true });
-      Object.entries(v).forEach(([k2, v2]) => walk(k2, v2, ind + 1));
-    } else rows.push({ k, v: String(v), ind });
-  };
-  Object.entries(obj).forEach(([k, v]) => walk(k, v, 0));
-  return rows;
+// hiddenLabels are fleet plumbing, not operator-facing tags.
+const hiddenLabels = new Set([
+  "fleet_registry",
+  "fleet_registry_role",
+  "regional_registry",
+  "regional_registry_role",
+  "scraper",
+  "target_id",
+]);
+
+function stateLabels(node) {
+  return Object.entries(node.labels || {})
+    .filter(([k, v]) => v !== "" && !hiddenLabels.has(k))
+    .sort(([a], [b]) => a.localeCompare(b));
 }
 
-function dataRowHTML(r) {
-  const hasVal = !r.header && r.v !== "";
-  const color = /MiB|GiB|KiB/.test(r.v) ? "#79c0ff" : (r.v === "true" ? "#56d364" : (r.v === "false" ? "#ff7b72" : "#c4cedb"));
-  return `<div class="dataRow" style="padding-left:${r.ind * 15}px;">
-    <span class="dataKey ${r.header ? "header" : ""}">${esc(r.k)}</span>
-    ${hasVal ? `<span class="dataVal" style="color:${color};">${esc(r.v)}</span>` : ""}
-  </div>`;
+// stateDataYAML renders the state's data payload as YAML, so arbitrarily
+// nested values display without flattening. Labels ride in their own section.
+function stateDataYAML(node) {
+  const entries = Object.entries(node.data || {})
+    .filter(([k, v]) => k !== "labels" && v !== null && v !== undefined && v !== "")
+    .sort(([a], [b]) => a.localeCompare(b));
+  if (!entries.length) return "";
+  return toYAML(Object.fromEntries(entries));
+}
+
+function yamlScalar(value) {
+  if (value === null || value === undefined) return "null";
+  if (typeof value === "boolean") return value ? "true" : "false";
+  if (typeof value === "number") return Number.isFinite(value) ? String(value) : JSON.stringify(String(value));
+  const str = String(value);
+  if (str === "") return '""';
+  if (/[\n"]/.test(str)) return JSON.stringify(str);
+  if (/^[\s]|[\s]$|^[-?:,[\]{}#&*!|>'"%@`]|[:#]\s|^(?:true|false|null|yes|no|on|off|~)$|^[-+]?\d/i.test(str)) {
+    return JSON.stringify(str);
+  }
+  return str;
+}
+
+function yamlKey(key) {
+  return /^[A-Za-z0-9_.-]+$/.test(key) ? key : JSON.stringify(key);
+}
+
+function isEmptyContainer(value) {
+  return Array.isArray(value) ? value.length === 0 : Object.keys(value).length === 0;
+}
+
+// highlightYAML tokenizes toYAML output into colored spans. It only needs to
+// understand the YAML this UI generates: one node per line, plain or
+// JSON-quoted keys, scalar values.
+function highlightYAML(yaml) {
+  return yaml.split("\n").map((line) => {
+    const m = line.match(/^(\s*)((?:- )*)((?:"(?:[^"\\]|\\.)*"|[A-Za-z0-9_.-]+):)?( ?)(.*)$/);
+    if (!m) return esc(line);
+    const [, indent, dashes, key, space, rest] = m;
+    return esc(indent)
+      + (dashes ? `<span class="yDash">${esc(dashes)}</span>` : "")
+      + (key ? `<span class="yKey">${esc(key)}</span>` : "")
+      + space
+      + yamlValueHTML(rest);
+  }).join("\n");
+}
+
+function yamlValueHTML(value) {
+  if (value === "") return "";
+  const cls =
+    /^-?\d+(\.\d+)?$/.test(value) ? "yNum"
+    : (value === "true" || value === "false") ? "yBool"
+    : (value === "null" || value === "[]" || value === "{}") ? "yNull"
+    : "yStr";
+  return `<span class="${cls}">${esc(value)}</span>`;
+}
+
+// toYAML renders a plain JSON value as a YAML document fragment indented under
+// the given level. Strings that could be misread as YAML are quoted.
+function toYAML(value, indent = 0) {
+  const pad = "  ".repeat(indent);
+  if (value === null || typeof value !== "object") return yamlScalar(value);
+
+  if (Array.isArray(value)) {
+    if (!value.length) return "[]";
+    return value.map((item) => {
+      if (item !== null && typeof item === "object" && !isEmptyContainer(item)) {
+        const lines = toYAML(item, indent + 1).split("\n");
+        const head = lines[0].slice((indent + 1) * 2);
+        const rest = lines.slice(1).join("\n");
+        return `${pad}- ${head}${rest ? `\n${rest}` : ""}`;
+      }
+      return `${pad}- ${toYAML(item, 0)}`;
+    }).join("\n");
+  }
+
+  const keys = Object.keys(value);
+  if (!keys.length) return "{}";
+  return keys.map((key) => {
+    const child = value[key];
+    if (child !== null && typeof child === "object" && !isEmptyContainer(child)) {
+      return `${pad}${yamlKey(key)}:\n${toYAML(child, indent + 1)}`;
+    }
+    if (child !== null && typeof child === "object") {
+      return `${pad}${yamlKey(key)}: ${Array.isArray(child) ? "[]" : "{}"}`;
+    }
+    return `${pad}${yamlKey(key)}: ${yamlScalar(child)}`;
+  }).join("\n");
 }
 
 // ---------- overview view ----------
@@ -680,8 +673,6 @@ function renderIncidents() {
   }
   const rows = list.map((inc) => {
     const sev = severityClass(inc);
-    const latest = (inc.events || [])[(inc.events || []).length - 1];
-    const reason = latest ? [latest.topic, latest.message].filter(Boolean).join(" · ") : (inc.type || "");
     const ack = inc.status === "acknowledged"
       ? `<span class="metaMono">acked</span>`
       : `<button type="button" class="ackBtn" data-source="${esc(inc.source)}" data-id="${esc(inc.id)}">Ack</button>`;
@@ -689,7 +680,7 @@ function renderIncidents() {
       <span class="sev ${sev.cls}">${esc(sev.label)}</span>
       <div style="min-width:0;"><div class="title" title="${esc(inc.title)}">${esc(inc.title)}</div><div class="id">${esc(inc.id)}</div></div>
       <span class="cell dim" title="${esc(inc.source)}">${esc(inc.source)}</span>
-      <span class="cell" title="${esc(reason)}">${esc(reason)}</span>
+      <span class="cell" title="${esc(inc.type || "")}">${esc(inc.type || "")}</span>
       <span class="cell dim">${esc(formatTime(inc.created_at))}</span>
       <span class="cell dim">${esc(formatAge(secondsSince(inc.last_updated_at)))} ago</span>
       <span class="incStatus">${esc(inc.status)}</span>
@@ -697,7 +688,7 @@ function renderIncidents() {
     </div>`;
   }).join("");
   el.innerHTML = `<div class="incTable">
-    <div class="incHead"><span>SEVERITY</span><span>TITLE</span><span>SOURCE</span><span>REASON</span><span>STARTED</span><span>UPDATED</span><span>STATUS</span><span></span></div>
+    <div class="incHead"><span>SEVERITY</span><span>TITLE</span><span>SOURCE</span><span>TYPE</span><span>STARTED</span><span>UPDATED</span><span>STATUS</span><span></span></div>
     ${rows}
   </div>`;
 }
@@ -746,10 +737,6 @@ function secondsSince(value) {
   const t = Date.parse(value);
   return Number.isNaN(t) ? NaN : Math.max(0, Math.floor((Date.now() - t) / 1000));
 }
-function secsAgo(explicit, fallbackTime) {
-  if (Number.isFinite(Number(explicit)) && Number(explicit) > 0) return Number(explicit);
-  return secondsSince(fallbackTime);
-}
 
 // ---------- events / wiring ----------
 
@@ -763,14 +750,16 @@ function clearError() { $("errbar").classList.add("hidden"); }
 $("tabFleet").addEventListener("click", () => { state.view = "fleet"; render(); });
 $("tabOverview").addEventListener("click", () => { state.view = "overview"; render(); });
 $("refresh").addEventListener("click", () => refresh().then(clearError).catch(showError));
-$("projectionMode").addEventListener("change", (e) => { state.projectionMode = e.target.value; refresh().then(clearError).catch(showError); });
 $("incidentFilter").addEventListener("change", (e) => { state.incidentFilter = e.target.value; render(); });
-$("timelineWindow").addEventListener("change", (e) => { state.windowMs = Number(e.target.value) || 60 * 60 * 1000; renderSparkline(); });
+$("timelineWindow").addEventListener("change", (e) => {
+  state.windowMs = Number(e.target.value) || 60 * 60 * 1000;
+  refresh().then(clearError).catch(showError);
+});
 
 $("targets").addEventListener("click", (e) => {
-  const issue = e.target.closest(".issueChip");
-  if (issue) { e.stopPropagation(); selectIdentity(issue.dataset.identity); return; }
   const row = e.target.closest("[data-target]");
+  const issue = e.target.closest(".issueChip");
+  if (issue && row) { e.stopPropagation(); selectTarget(row.dataset.target, issue.dataset.identity); return; }
   if (row) selectTarget(row.dataset.target);
 });
 $("states").addEventListener("click", (e) => {

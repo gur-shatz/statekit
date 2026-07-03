@@ -1,9 +1,211 @@
 openapi: 3.0.3
 info:
   title: statekit storage API
-  version: 0.1.0
-  description: Query API for stored statekit state documents.
+  version: 0.3.0
+  description: >
+    Query API for stored statekit state documents, organized in three data
+    layers. L1 (/state/summary, /state/targets) is the constantly polled
+    current view without data payloads. L2 (/state/targets/{key},
+    /state/states/{identity}) is the full current detail fetched on
+    drill-down. L3 (/state/states/{identity}/timeline, /state/timeline,
+    /state/timeline/bucket, incidents) is historical and explicitly bounded.
+    Every layer GET sets a strong ETag and honors If-None-Match with 304, so
+    an idle fleet polls as one small summary body plus 304s.
 paths:
+  /state/summary:
+    get:
+      summary: Fleet rollup (L1)
+      description: >
+        Worst status, state and target status counts, fleet hash, and the
+        latest observation time. fleet_hash is the ETag; it is the hash of
+        the sorted (target key, material_hash) pairs and changes only when
+        some target's material content changes.
+      responses:
+        '200':
+          description: Fleet summary
+          headers:
+            ETag:
+              $ref: '#/components/headers/ETag'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FleetSummary'
+        '304':
+          $ref: '#/components/responses/NotModified'
+  /state/targets:
+    get:
+      summary: List target summaries (L1)
+      description: >
+        One summary per target with flat per-state headers and no data
+        payloads. The ETag is the fleet hash; each summary's material_hash is
+        the ETag of its L2 detail document.
+      responses:
+        '200':
+          description: Target summaries
+          headers:
+            ETag:
+              $ref: '#/components/headers/ETag'
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/TargetSummary'
+        '304':
+          $ref: '#/components/responses/NotModified'
+  /state/targets/{key}:
+    get:
+      summary: Full detail for one target (L2)
+      description: >
+        The target summary plus full state details including data. The ETag
+        is the target's material_hash from the L1 summary.
+      parameters:
+        - name: key
+          in: path
+          required: true
+          description: Target key as returned by /state/targets, URL-encoded.
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Target detail
+          headers:
+            ETag:
+              $ref: '#/components/headers/ETag'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TargetDetail'
+        '304':
+          $ref: '#/components/responses/NotModified'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /state/states/{identity}:
+    get:
+      summary: Full detail for one state (L2)
+      description: One state's detail including data and child identities.
+      parameters:
+        - name: identity
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: State detail
+          headers:
+            ETag:
+              $ref: '#/components/headers/ETag'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StateDetail'
+        '304':
+          $ref: '#/components/responses/NotModified'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /state/states/{identity}/timeline:
+    get:
+      summary: Transition history for one state (L3)
+      description: >
+        The state's bounded transition ring, newest first. Transitions are
+        keyed by identity + changed_at + status; scrapes of an unchanged
+        state add nothing.
+      parameters:
+        - name: identity
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: State timeline
+          headers:
+            ETag:
+              $ref: '#/components/headers/ETag'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StateTimeline'
+        '304':
+          $ref: '#/components/responses/NotModified'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /state/timeline:
+    get:
+      summary: Bucketed triggering-state counts (L3 charting store)
+      description: >
+        Draws the stacked "which states were triggering over time" chart and
+        the sparkline directly; one small array, no client-side aggregation.
+        Counts are distinct triggering states per status per bucket.
+      parameters:
+        - name: scope
+          in: query
+          description: '"fleet" (default) or "target:{key}".'
+          schema:
+            type: string
+        - name: window
+          in: query
+          description: Go duration, for example 24h or 90m. Defaults to 24h.
+          schema:
+            type: string
+        - name: buckets
+          in: query
+          description: Number of display buckets. Defaults to 64.
+          schema:
+            type: integer
+            minimum: 1
+      responses:
+        '200':
+          description: Bucketed counts
+          headers:
+            ETag:
+              $ref: '#/components/headers/ETag'
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/BucketCounts'
+        '304':
+          $ref: '#/components/responses/NotModified'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+  /state/timeline/bucket:
+    get:
+      summary: Triggering states in one chart bucket (L3 charting store)
+      description: >
+        Tooltip/hover detail; the triggering states recorded in the native
+        bucket containing t. Labels are captured at write time, so entries
+        resolve without joining the current layers.
+      parameters:
+        - name: scope
+          in: query
+          description: '"fleet" (default) or "target:{key}".'
+          schema:
+            type: string
+        - name: t
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date-time
+      responses:
+        '200':
+          description: Triggering states in the bucket
+          headers:
+            ETag:
+              $ref: '#/components/headers/ETag'
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/TriggeringState'
+        '304':
+          $ref: '#/components/responses/NotModified'
+        '400':
+          $ref: '#/components/responses/BadRequest'
   /state/doc:
     post:
       summary: Ingest a statekit display document
@@ -24,99 +226,6 @@ paths:
       responses:
         '204':
           description: Stored
-  /state/current:
-    get:
-      summary: List current states
-      parameters:
-        - name: status
-          in: query
-          schema:
-            type: string
-            enum: [pass, warn, fail, down]
-        - name: group_name
-          in: query
-          schema:
-            type: string
-        - name: label.region
-          in: query
-          description: Filter by a normalized label. Any label.<name> query key is accepted.
-          schema:
-            type: string
-      responses:
-        '200':
-          description: Current states
-          content:
-            application/json:
-              schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/CurrentState'
-  /state/targets:
-    get:
-      summary: List target material documents
-      description: Returns target-oriented current state documents with summary fields for UI and durable flush decisions.
-      responses:
-        '200':
-          description: Target documents
-          content:
-            application/json:
-              schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/TargetDocument'
-  /state/groups:
-    get:
-      summary: Group current states
-      parameters:
-        - name: by
-          in: query
-          description: Grouping key. Repeat or comma-separate. Use group_name, status, importance, scraped_from, or label:<name>.
-          schema:
-            type: array
-            items:
-              type: string
-          style: form
-          explode: true
-        - name: status
-          in: query
-          schema:
-            type: string
-            enum: [pass, warn, fail, down]
-        - name: group_name
-          in: query
-          schema:
-            type: string
-      responses:
-        '200':
-          description: Group buckets
-          content:
-            application/json:
-              schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/GroupBucket'
-  /state/events:
-    get:
-      summary: List transition events
-      parameters:
-        - name: identity
-          in: query
-          schema:
-            type: string
-        - name: limit
-          in: query
-          schema:
-            type: integer
-            minimum: 1
-      responses:
-        '200':
-          description: State events
-          content:
-            application/json:
-              schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/StateEvent'
   /escalations/doc:
     post:
       summary: Ingest an escalation display document
@@ -144,7 +253,11 @@ paths:
           description: Stored
   /escalations/incidents:
     get:
-      summary: List stored escalation incidents
+      summary: List stored escalation incidents (summaries)
+      description: >
+        Incident summaries without events. Fetch
+        /escalations/incidents/{source}/{id} for the event log. YAML by
+        default, JSON when the Accept header includes application/json.
       parameters:
         - name: source
           in: query
@@ -166,7 +279,10 @@ paths:
             type: string
       responses:
         '200':
-          description: Escalation incidents. YAML by default, JSON when the Accept header includes application/json.
+          description: Escalation incident summaries
+          headers:
+            ETag:
+              $ref: '#/components/headers/ETag'
           content:
             text/yaml:
               schema:
@@ -178,6 +294,40 @@ paths:
                 type: array
                 items:
                   $ref: '#/components/schemas/Incident'
+        '304':
+          $ref: '#/components/responses/NotModified'
+  /escalations/incidents/{source}/{id}:
+    get:
+      summary: One stored escalation incident, with events
+      description: >
+        The full incident including its bounded event ring. When the same
+        source and id were reused across restarts, the most recently created
+        incident is returned.
+      parameters:
+        - name: source
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Escalation incident
+          headers:
+            ETag:
+              $ref: '#/components/headers/ETag'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Incident'
+        '304':
+          $ref: '#/components/responses/NotModified'
+        '404':
+          $ref: '#/components/responses/NotFound'
   /escalations/global:
     post:
       summary: Report a fleet-wide incident
@@ -233,7 +383,232 @@ paths:
               schema:
                 type: string
 components:
+  headers:
+    ETag:
+      description: Strong entity tag for conditional polling with If-None-Match.
+      schema:
+        type: string
+  responses:
+    NotModified:
+      description: Content unchanged since the If-None-Match tag.
+    NotFound:
+      description: Subject does not exist.
+      content:
+        text/plain:
+          schema:
+            type: string
+    BadRequest:
+      description: Invalid parameters.
+      content:
+        text/plain:
+          schema:
+            type: string
   schemas:
+    FleetSummary:
+      type: object
+      required: [worst_status, status_counts, targets, fleet_hash, observed_at]
+      properties:
+        worst_status:
+          type: string
+          enum: [pass, warn, fail, down]
+        status_counts:
+          description: Count of states by status, including checks.
+          type: object
+          additionalProperties:
+            type: integer
+        targets:
+          type: object
+          required: [total, by_status]
+          properties:
+            total:
+              type: integer
+            by_status:
+              description: Count of targets by their worst status.
+              type: object
+              additionalProperties:
+                type: integer
+        fleet_hash:
+          description: Hash of the sorted (target key, material_hash) pairs; the L1 ETag.
+          type: string
+        observed_at:
+          type: string
+          format: date-time
+    TargetSummary:
+      type: object
+      required: [key, name, scrape_path, worst_status, status_counts, material_hash, observed_at, states]
+      properties:
+        key:
+          type: string
+        name:
+          type: string
+        scrape_path:
+          type: string
+        labels:
+          type: object
+          additionalProperties:
+            type: string
+        worst_status:
+          type: string
+          enum: [pass, warn, fail, down]
+        status_counts:
+          description: Count of top-level states by status.
+          type: object
+          additionalProperties:
+            type: integer
+        affected_states:
+          type: array
+          items:
+            $ref: '#/components/schemas/AffectedState'
+        material_hash:
+          description: ETag of the target's L2 detail document.
+          type: string
+        observed_at:
+          type: string
+          format: date-time
+        states:
+          description: Flat per-state headers including checks, with parent pointers.
+          type: array
+          items:
+            $ref: '#/components/schemas/StateHeader'
+    StateHeader:
+      type: object
+      required: [identity, name, status, importance, changed_at]
+      properties:
+        identity:
+          type: string
+        parent_identity:
+          type: string
+        target_key:
+          type: string
+        name:
+          type: string
+        status:
+          type: string
+          enum: [pass, warn, fail, down]
+        reason:
+          type: string
+        importance:
+          type: string
+          enum: [important, informational]
+        changed_at:
+          type: string
+          format: date-time
+    AffectedState:
+      type: object
+      properties:
+        name:
+          type: string
+        status:
+          type: string
+          enum: [pass, warn, fail, down]
+        reason:
+          type: string
+        changed_at:
+          type: string
+          format: date-time
+    TargetDetail:
+      allOf:
+        - $ref: '#/components/schemas/TargetSummary'
+        - type: object
+          required: [details]
+          properties:
+            details:
+              type: array
+              items:
+                $ref: '#/components/schemas/StateDetail'
+    StateDetail:
+      allOf:
+        - $ref: '#/components/schemas/StateHeader'
+        - type: object
+          required: [data_hash, observed_at, first_seen_at, last_seen_at]
+          properties:
+            scraped_from:
+              type: string
+            scrape_path:
+              type: string
+            help:
+              type: string
+            group_name:
+              type: string
+            labels:
+              type: object
+              additionalProperties:
+                type: string
+            label_path:
+              type: array
+              items:
+                $ref: '#/components/schemas/StateDisplayLabel'
+            data:
+              type: object
+              additionalProperties: true
+            data_hash:
+              type: string
+            updated_at:
+              type: string
+              format: date-time
+            observed_at:
+              type: string
+              format: date-time
+            first_seen_at:
+              type: string
+              format: date-time
+            last_seen_at:
+              type: string
+              format: date-time
+            children:
+              description: Identities of child states.
+              type: array
+              items:
+                type: string
+    StateTimeline:
+      type: object
+      required: [identity, transitions]
+      properties:
+        identity:
+          type: string
+        transitions:
+          description: Newest first.
+          type: array
+          items:
+            $ref: '#/components/schemas/Transition'
+    Transition:
+      type: object
+      required: [changed_at, status]
+      properties:
+        changed_at:
+          type: string
+          format: date-time
+        status:
+          type: string
+          enum: [pass, warn, fail, down]
+        reason:
+          type: string
+    BucketCounts:
+      type: object
+      required: [t, counts]
+      properties:
+        t:
+          type: string
+          format: date-time
+        counts:
+          description: Distinct triggering states by status; warn/fail/down only.
+          type: object
+          additionalProperties:
+            type: integer
+    TriggeringState:
+      type: object
+      required: [identity, label, status]
+      properties:
+        identity:
+          type: string
+        target_key:
+          type: string
+        label:
+          description: Display name ("target:check") captured at write time.
+          type: string
+        status:
+          type: string
+          enum: [warn, fail, down]
     StateDisplayDocument:
       type: object
       required: [kind, label_path, states]
@@ -371,212 +746,6 @@ components:
           items:
             $ref: '#/components/schemas/Snapshot'
       additionalProperties: true
-    CurrentState:
-      type: object
-      allOf:
-        - $ref: '#/components/schemas/StateNode'
-      properties:
-        observation:
-          $ref: '#/components/schemas/CurrentObservation'
-    StateNode:
-      type: object
-      properties:
-        identity:
-          type: string
-        parent_identity:
-          type: string
-        name:
-          type: string
-        scraped_from:
-          type: string
-        scrape_path:
-          type: string
-        importance:
-          type: string
-        help:
-          type: string
-        group_name:
-          type: string
-        labels:
-          type: object
-          additionalProperties:
-            type: string
-        first_seen_at:
-          type: string
-          format: date-time
-        last_seen_at:
-          type: string
-          format: date-time
-        metadata_hash:
-          type: string
-    CurrentObservation:
-      type: object
-      properties:
-        status:
-          type: string
-        reason:
-          type: string
-        changed_at:
-          type: string
-          format: date-time
-        changed_secs_ago:
-          type: integer
-        updated_at:
-          type: string
-          format: date-time
-        updated_secs_ago:
-          type: integer
-        observed_at:
-          type: string
-          format: date-time
-        data:
-          type: object
-        data_hash:
-          type: string
-    GroupBucket:
-      type: object
-      properties:
-        values:
-          type: object
-          additionalProperties:
-            type: string
-        status_counts:
-          type: object
-          additionalProperties:
-            type: integer
-        total:
-          type: integer
-        worst_status:
-          type: string
-    TargetDocument:
-      type: object
-      properties:
-        key:
-          type: string
-        name:
-          type: string
-        scrape_path:
-          type: string
-        labels:
-          type: object
-          additionalProperties:
-            type: string
-        worst_status:
-          type: string
-          enum: [pass, warn, fail, down]
-        status_counts:
-          type: object
-          additionalProperties:
-            type: integer
-        affected_states:
-          type: array
-          items:
-            $ref: '#/components/schemas/AffectedState'
-        material_hash:
-          type: string
-        observed_at:
-          type: string
-          format: date-time
-        states:
-          type: array
-          items:
-            $ref: '#/components/schemas/TargetState'
-    TargetState:
-      type: object
-      properties:
-        identity:
-          type: string
-        name:
-          type: string
-        status:
-          type: string
-          enum: [pass, warn, fail, down]
-        reason:
-          type: string
-        importance:
-          type: string
-        help:
-          type: string
-        group_name:
-          type: string
-        labels:
-          type: object
-          additionalProperties:
-            type: string
-        changed_at:
-          type: string
-          format: date-time
-        updated_at:
-          type: string
-          format: date-time
-        observed_at:
-          type: string
-          format: date-time
-        checks:
-          type: array
-          items:
-            $ref: '#/components/schemas/TargetCheck'
-    TargetCheck:
-      type: object
-      properties:
-        identity:
-          type: string
-        name:
-          type: string
-        status:
-          type: string
-          enum: [pass, warn, fail, down]
-        reason:
-          type: string
-        importance:
-          type: string
-        help:
-          type: string
-        labels:
-          type: object
-          additionalProperties:
-            type: string
-        changed_at:
-          type: string
-          format: date-time
-        updated_at:
-          type: string
-          format: date-time
-        observed_at:
-          type: string
-          format: date-time
-    AffectedState:
-      type: object
-      properties:
-        name:
-          type: string
-        status:
-          type: string
-          enum: [pass, warn, fail, down]
-        reason:
-          type: string
-        changed_at:
-          type: string
-          format: date-time
-    StateEvent:
-      type: object
-      properties:
-        event_key:
-          type: string
-        identity:
-          type: string
-        status:
-          type: string
-        reason:
-          type: string
-        changed_at:
-          type: string
-          format: date-time
-        observed_at:
-          type: string
-          format: date-time
-        data:
-          type: object
     Incident:
       type: object
       properties:
@@ -610,6 +779,10 @@ components:
         severity:
           type: string
           enum: [pass, warn, fail, down]
+        label_path:
+          type: array
+          items:
+            $ref: '#/components/schemas/StateDisplayLabel'
         labels:
           type: object
           additionalProperties:

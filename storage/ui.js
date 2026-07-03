@@ -1,19 +1,27 @@
+// statekit storage UI — pure consumer of the storage layer API.
+// The refresh tick polls L1 (/state/targets) and the charting store
+// (/state/timeline); the selected target's states come from its L2 document
+// (/state/targets/{key}, revalidated by its material_hash ETag); the
+// per-target transition table merges the L3 timelines of that target's
+// states.
+
 const apiBase = window.STATEKIT_API_BASE || "/api";
 const statusOrder = ["pass", "warn", "fail", "down"];
-const timelineNowMarkerID = "now-marker";
 const globalIncidentTypes = new Set(["build", "deployment", "rollback"]);
+const chartBucketCount = 96;
 
 const state = {
   status: "",
-  projectionMode: "server",
   selectedTarget: "",
-  current: [],
-  events: [],
   targets: [],
   incidents: [],
+  chart: [], // BucketCounts[] from /state/timeline
+  detail: null, // TargetDetail of the selected target
+  detailStates: [], // top-level StateDetails with .checks attached
+  byId: new Map(), // identity -> StateDetail, selected target only
+  transitions: [], // merged L3 transitions of the selected target's states
   incidentFilter: "active",
   timelineWindowMs: 60 * 60 * 1000,
-  systemTimeline: null,
 };
 
 const $ = (id) => document.getElementById(id);
@@ -26,89 +34,50 @@ function esc(value) {
     .replaceAll('"', "&quot;");
 }
 
+// Conditional GET cache: every layer endpoint sets a strong ETag, so the
+// steady-state poll is one small L1 body plus 304s.
+const etagCache = new Map(); // path -> {etag, data}
+
 async function fetchJSON(path) {
-  const res = await fetch(`${apiBase}${path}`, { headers: { Accept: "application/json" } });
+  const cached = etagCache.get(path);
+  const headers = { Accept: "application/json" };
+  if (cached?.etag) headers["If-None-Match"] = cached.etag;
+  const res = await fetch(`${apiBase}${path}`, { headers });
+  if (res.status === 304 && cached) return cached.data;
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
-  return res.json();
+  const data = await res.json();
+  const etag = res.headers.get("ETag");
+  if (etag) etagCache.set(path, { etag, data });
+  return data;
+}
+
+function chartPath() {
+  return `/state/timeline?scope=fleet&window=${Math.round(state.timelineWindowMs / 1000)}s&buckets=${chartBucketCount}`;
 }
 
 async function refresh() {
   $("lastRefresh").textContent = "Refreshing...";
-  const [current, events, serverTargets, incidents] = await Promise.all([
-    fetchJSON("/state/current"),
-    fetchJSON("/state/events?limit=500"),
+  const [targets, incidents, chart] = await Promise.all([
     fetchJSON("/state/targets"),
     fetchJSON("/escalations/incidents"),
+    fetchJSON(chartPath()),
   ]);
-  state.current = current;
-  state.events = events;
+  state.targets = normalizeTargets(targets);
   state.incidents = incidents || [];
-  state.targets = state.projectionMode === "server" ? normalizeServerTargets(serverTargets) : buildTargets(current);
-  if (!state.selectedTarget && state.targets.length) state.selectedTarget = state.targets[0].key;
-  if (state.selectedTarget && !state.targets.some((t) => t.key === state.selectedTarget)) {
+  state.chart = chart || [];
+  if (!state.selectedTarget || !state.targets.some((t) => t.key === state.selectedTarget)) {
     state.selectedTarget = state.targets[0]?.key || "";
   }
+  await loadSelectedTarget();
   render();
 }
 
-function buildTargets(items) {
-  const byID = new Map(items.map((item) => [item.identity, item]));
-  const groups = new Map();
-
-  items.forEach((item) => {
-    const target = targetFor(item);
-    if (!target.name) return;
-    const group = groups.get(target.key) || {
-      key: target.key,
-      name: target.name,
-      scrapePath: target.scrapePath,
-      labels: {},
-      states: [],
-      checksByParent: new Map(),
-      counts: { pass: 0, warn: 0, fail: 0, down: 0 },
-      worstStatus: "pass",
-      observedAt: "",
-    };
-    groups.set(target.key, group);
-
-    const parent = byID.get(item.parent_identity);
-    if (parent && targetFor(parent).key === target.key) {
-      const checks = group.checksByParent.get(item.parent_identity) || [];
-      checks.push(item);
-      group.checksByParent.set(item.parent_identity, checks);
-      return;
-    }
-
-    group.states.push(item);
-    group.labels = { ...group.labels, ...(item.labels || {}) };
-    const status = item.observation?.status || "pass";
-    group.counts[status] = (group.counts[status] || 0) + 1;
-    if (rank(status) > rank(group.worstStatus)) group.worstStatus = status;
-    if (!group.observedAt || Date.parse(item.observation?.observed_at || 0) > Date.parse(group.observedAt || 0)) {
-      group.observedAt = item.observation?.observed_at || "";
-    }
-  });
-
-  return [...groups.values()]
-    .map((target) => {
-      target.states.sort(compareStates);
-      target.affectedStates = target.states.filter((item) => item.observation?.status !== "pass");
-      return target;
-    })
-    .sort((a, b) => {
-      const byStatus = rank(b.worstStatus) - rank(a.worstStatus);
-      if (byStatus) return byStatus;
-      return a.name.localeCompare(b.name);
-    });
-}
-
-function normalizeServerTargets(items) {
+function normalizeTargets(items) {
   return (items || []).map((item) => ({
     key: item.key,
     name: item.name,
     scrapePath: item.scrape_path || item.name,
     labels: item.labels || {},
-    states: (item.states || []).map(normalizeServerState),
     counts: {
       pass: item.status_counts?.pass || 0,
       warn: item.status_counts?.warn || 0,
@@ -126,43 +95,44 @@ function normalizeServerTargets(items) {
   });
 }
 
-function normalizeServerState(item) {
-  return {
-    identity: item.identity,
-    name: item.name,
-    group_name: item.group_name || "",
-    labels: item.labels || {},
-    observation: {
-      status: item.status || "pass",
-      reason: item.reason || "",
-      changed_at: item.changed_at || "",
-      changed_secs_ago: secondsSince(item.changed_at),
-      observed_at: item.observed_at || "",
-      data: item.data || {},
-    },
-    checks: (item.checks || []).map(normalizeServerCheck),
-  };
-}
+// loadSelectedTarget fetches the selected target's L2 detail (revalidated by
+// its material_hash ETag) and the L3 timelines of its states.
+async function loadSelectedTarget() {
+  if (!state.selectedTarget) {
+    state.detail = null;
+    state.detailStates = [];
+    state.byId = new Map();
+    state.transitions = [];
+    return;
+  }
+  const detail = await fetchJSON(`/state/targets/${encodeURIComponent(state.selectedTarget)}`);
+  state.detail = detail;
+  const details = detail.details || [];
+  state.byId = new Map(details.map((d) => [d.identity, d]));
+  const checksByParent = new Map();
+  const roots = [];
+  details.forEach((d) => {
+    if (d.parent_identity && state.byId.has(d.parent_identity)) {
+      const list = checksByParent.get(d.parent_identity) || [];
+      list.push(d);
+      checksByParent.set(d.parent_identity, list);
+    } else {
+      roots.push(d);
+    }
+  });
+  roots.forEach((d) => { d.checks = (checksByParent.get(d.identity) || []).slice().sort(compareStates); });
+  state.detailStates = roots.sort(compareStates);
 
-function normalizeServerCheck(item) {
-  return {
-    identity: item.identity,
-    name: item.name,
-    labels: item.labels || {},
-    observation: {
-      status: item.status || "pass",
-      reason: item.reason || "",
-      changed_at: item.changed_at || "",
-      changed_secs_ago: secondsSince(item.changed_at),
-      observed_at: item.observed_at || "",
-    },
-  };
-}
-
-function targetFor(item) {
-  const name = item.scraped_from || item.labels?.target_id || "";
-  const scrapePath = item.scrape_path || name;
-  return { name, scrapePath, key: `${name}\n${scrapePath}` };
+  const timelines = await Promise.all(details.map((d) =>
+    fetchJSON(`/state/states/${encodeURIComponent(d.identity)}/timeline`).catch(() => null)));
+  state.transitions = timelines
+    .filter(Boolean)
+    .flatMap((timeline) => (timeline.transitions || []).map((transition) => ({
+      ...transition,
+      identity: timeline.identity,
+      name: state.byId.get(timeline.identity)?.name || timeline.identity.slice(0, 10),
+    })))
+    .sort((a, b) => Date.parse(b.changed_at || 0) - Date.parse(a.changed_at || 0));
 }
 
 function rank(status) {
@@ -170,7 +140,7 @@ function rank(status) {
 }
 
 function compareStates(a, b) {
-  const byStatus = rank(b.observation?.status) - rank(a.observation?.status);
+  const byStatus = rank(b.status) - rank(a.status);
   if (byStatus) return byStatus;
   return (a.name || "").localeCompare(b.name || "");
 }
@@ -188,11 +158,11 @@ function selectedTarget() {
 function render() {
   renderTotals();
   renderTargets();
-  renderSystemTimeline();
+  renderFleetChart();
   renderIncidents();
   renderStates();
-  renderEvents();
-  $("lastRefresh").textContent = `Updated ${new Date().toLocaleTimeString()} from ${state.projectionMode}`;
+  renderTransitions();
+  $("lastRefresh").textContent = `Updated ${new Date().toLocaleTimeString()}`;
 }
 
 function renderTotals() {
@@ -237,14 +207,18 @@ function renderTargets() {
   </div>${rows || `<div class="empty">No targets</div>`}`;
   $("targets").querySelectorAll("[data-target]").forEach((row) => {
     row.addEventListener("click", () => {
-      state.selectedTarget = row.dataset.target;
-      render();
+      selectTarget(row.dataset.target);
     });
   });
 }
 
+function selectTarget(key) {
+  state.selectedTarget = key;
+  loadSelectedTarget().then(render).catch(showError);
+}
+
 function affectedChip(item) {
-  const status = item.observation?.status || item.status || "pass";
+  const status = item.status || "pass";
   return `<span class="chip ${esc(status)} truncate">${esc(item.name)}: ${esc(status)}</span>`;
 }
 
@@ -263,19 +237,17 @@ function renderStates() {
     $("states").innerHTML = `<div class="empty">No target selected</div>`;
     return;
   }
-  const rows = target.states;
-  $("states").innerHTML = rows.map((item) => stateCard(target, item)).join("") || `<div class="empty">No states for this target</div>`;
+  $("states").innerHTML = state.detailStates.map((item) => stateCard(target, item)).join("") ||
+    `<div class="empty">No states for this target</div>`;
 }
 
 function stateCard(target, item) {
-  const obs = item.observation || {};
-  const checks = checksForState(target, item).slice().sort(compareStates);
-  const reason = obs.reason ? `<div class="reason truncate">${esc(obs.reason)}</div>` : "";
+  const reason = item.reason ? `<div class="reason truncate">${esc(item.reason)}</div>` : "";
   const labels = stateLabels(item);
   const data = stateData(item);
   return `<article class="stateCard clickable" data-identity="${esc(item.identity)}">
     <div class="stateCardTop">
-      <span class="pill ${esc(obs.status)}">${esc(obs.status)}</span>
+      <span class="pill ${esc(item.status)}">${esc(item.status)}</span>
       <div class="stateCardTitle">
         <div class="stateName truncate">${esc(item.name)}</div>
         <div class="subtle truncate">${esc(item.group_name || "")}</div>
@@ -283,18 +255,13 @@ function stateCard(target, item) {
     </div>
     ${reason}
     ${labels ? `<div class="labels stateLabels">${labels}</div>` : ""}
-    ${data ? `<div class="dataBlock"><div class="dataTitle">data</div><div class="dataGrid">${data}</div></div>` : ""}
+    ${data ? `<div class="dataBlock"><div class="dataTitle">data</div><pre class="dataYaml">${highlightYAML(data)}</pre></div>` : ""}
     <div class="cardMeta">
-      <span>changed ${esc(formatAge(obs.changed_secs_ago))} ago</span>
-      <span>observed ${esc(formatTime(obs.observed_at))}</span>
+      <span>changed ${esc(formatAge(secondsSince(item.changed_at)))} ago</span>
+      <span>observed ${esc(formatTime(item.observed_at))}</span>
     </div>
-    ${checks.length ? `<div class="checks">${checks.map(checkRow).join("")}</div>` : ""}
+    ${item.checks?.length ? `<div class="checks">${item.checks.map(checkRow).join("")}</div>` : ""}
   </article>`;
-}
-
-function checksForState(target, item) {
-  if (item.checks) return item.checks;
-  return target.checksByParent?.get(item.identity) || [];
 }
 
 function stateLabels(item) {
@@ -313,263 +280,65 @@ function stateLabels(item) {
     .join("");
 }
 
+// stateData renders the state's data payload as YAML, so arbitrarily nested
+// values display without flattening. Labels ride in their own chip row.
 function stateData(item) {
-  const data = item.observation?.data || {};
-  return Object.entries(data)
+  const entries = Object.entries(item.data || {})
     .filter(([k, v]) => k !== "labels" && v !== null && v !== undefined && v !== "")
-    .sort(([a], [b]) => a.localeCompare(b))
-    .map(([k, v]) => {
-      const value = formatDataValue(v);
-      return `<div class="dataPair"><span class="dataKey truncate">${esc(k)}</span><span class="dataVal truncate" title="${esc(value)}">${esc(value)}</span></div>`;
-    })
-    .join("");
-}
-
-function formatDataValue(value) {
-  if (value === null || value === undefined) return "";
-  if (typeof value === "object") return JSON.stringify(value);
-  return String(value);
+    .sort(([a], [b]) => a.localeCompare(b));
+  if (!entries.length) return "";
+  return toYAML(Object.fromEntries(entries));
 }
 
 function checkRow(item) {
-  const obs = item.observation || {};
   return `<div class="checkRow clickable" data-identity="${esc(item.identity)}">
-    <div><span class="pill ${esc(obs.status)}">${esc(obs.status)}</span></div>
+    <div><span class="pill ${esc(item.status)}">${esc(item.status)}</span></div>
     <div class="truncate">${esc(item.name)}</div>
-    <div class="truncate">${esc(obs.reason || "")}</div>
-    <div>${esc(formatAge(obs.changed_secs_ago))}</div>
+    <div class="truncate">${esc(item.reason || "")}</div>
+    <div>${esc(formatAge(secondsSince(item.changed_at)))}</div>
   </div>`;
 }
 
-function renderEvents() {
+function renderTransitions() {
   const target = selectedTarget();
   $("timelineTitle").textContent = target ? `Timeline: ${target.name}` : "Timeline";
   if (!target) {
     $("events").innerHTML = `<div class="empty">No target selected</div>`;
     return;
   }
-  const ids = new Set([
-    ...target.states.map((item) => item.identity),
-    ...target.states.flatMap((item) => checksForState(target, item)).map((item) => item.identity),
-  ]);
-  const byIdentity = new Map(state.current.map((item) => [item.identity, item]));
-  const rows = state.events
-    .filter((event) => ids.has(event.identity))
-    .slice()
-    .reverse()
-    .map((event) => {
-      const item = byIdentity.get(event.identity);
-      const name = item?.name || event.identity.slice(0, 10);
-      return `<div class="row">
-        <div class="truncate">${formatTime(event.observed_at)}</div>
-        <div><span class="pill ${esc(event.status)}">${esc(event.status)}</span></div>
-        <div class="truncate">${esc(name)}</div>
-        <div class="truncate">${esc(event.reason || "")}</div>
-      </div>`;
-    }).join("");
+  const rows = state.transitions.map((transition) => `<div class="row">
+      <div class="truncate">${formatTime(transition.changed_at)}</div>
+      <div><span class="pill ${esc(transition.status)}">${esc(transition.status)}</span></div>
+      <div class="truncate">${esc(transition.name)}</div>
+      <div class="truncate">${esc(transition.reason || "")}</div>
+    </div>`).join("");
   $("events").innerHTML = `<div class="row header">
-    <div>Observed</div><div>Status</div><div>State</div><div>Reason</div>
-  </div>${rows || `<div class="empty">No events for this target</div>`}`;
+    <div>Changed</div><div>Status</div><div>State</div><div>Reason</div>
+  </div>${rows || `<div class="empty">No transitions for this target</div>`}`;
 }
 
-function renderSystemTimeline() {
-  const container = $("systemTimelineViz");
-  if (!container) return;
-  const now = new Date();
-  const rangeStart = new Date(now.getTime() - state.timelineWindowMs);
-  const intervals = buildTargetIntervals()
-    .filter((interval) => intervalOverlapsWindow(interval, rangeStart, now));
-  if (!window.vis?.Timeline || !window.vis?.DataSet) {
-    container.innerHTML = `<div class="empty">Timeline library unavailable</div>`;
-    return;
-  }
-  const items = intervals.map((interval, idx) => ({
-    id: `system-${interval.targetKey}-${idx}`,
-    content: esc(`${interval.status} ${interval.targetName}`),
-    title: esc([interval.targetName, interval.status, interval.reasons.join("; ")].filter(Boolean).join(": ")),
-    start: interval.start,
-    end: interval.end || new Date(),
-    type: "range",
-    className: `timeline-${interval.status}`,
+// renderFleetChart draws the charting store's bucketed triggering-state
+// counts as stacked bars: one lookup, no client-side event replay.
+function renderFleetChart() {
+  const container = $("fleetChart");
+  const buckets = state.chart.map((b) => ({
+    t: b.t || "",
+    warn: b.counts?.warn || 0,
+    fail: (b.counts?.fail || 0) + (b.counts?.down || 0),
   }));
-  items.push(...incidentTimelineItems(rangeStart, now));
-  if (!items.length) {
-    if (state.systemTimeline) {
-      state.systemTimeline.destroy();
-      state.systemTimeline = null;
-    }
-    container.innerHTML = `<div class="empty">No recent issue transitions or incidents</div>`;
-    return;
-  }
-
-  const options = {
-    stack: true,
-    stackSubgroups: true,
-    selectable: true,
-    zoomMin: 1000,
-    zoomMax: 1000 * 60 * 60 * 24 * 14,
-    margin: { item: { horizontal: 8, vertical: 8 }, axis: 8 },
-    orientation: "top",
-    start: rangeStart,
-    end: now,
-  };
-
-  if (!state.systemTimeline) {
-    container.innerHTML = "";
-    state.systemTimeline = new window.vis.Timeline(
-      container,
-      new window.vis.DataSet(items),
-      options,
-    );
-  } else {
-    state.systemTimeline.setItems(new window.vis.DataSet(items));
-    state.systemTimeline.setOptions(options);
-  }
-  setNowMarker(state.systemTimeline, now);
-  state.systemTimeline.setWindow(rangeStart, now, { animation: false });
-}
-
-function setNowMarker(timeline, now) {
-  try {
-    timeline.setCustomTime(now, timelineNowMarkerID);
-  } catch {
-    timeline.addCustomTime(now, timelineNowMarkerID);
-  }
-  if (typeof timeline.setCustomTimeTitle === "function") {
-    timeline.setCustomTimeTitle("now", timelineNowMarkerID);
-  }
-}
-
-function intervalOverlapsWindow(interval, rangeStart, rangeEnd) {
-  const start = Date.parse(interval.start);
-  const end = interval.end ? Date.parse(interval.end) : rangeEnd.getTime();
-  if (Number.isNaN(start) || Number.isNaN(end)) return false;
-  return start <= rangeEnd.getTime() && end >= rangeStart.getTime();
-}
-
-function buildTargetIntervals() {
-  const byIdentity = new Map(state.current.map((item) => [item.identity, item]));
-  const targetStates = new Map(state.targets.map((target) => [target.key, {
-    target,
-    open: null,
-    intervals: [],
-    statusByIdentity: new Map(),
-  }]));
-
-  state.events
-    .slice()
-    .sort((a, b) => Date.parse(a.observed_at || a.changed_at || 0) - Date.parse(b.observed_at || b.changed_at || 0))
-    .forEach((event) => {
-      const current = byIdentity.get(event.identity);
-      if (!current) return;
-      const targetKey = targetFor(current).key;
-      const bucket = targetStates.get(targetKey);
-      if (!bucket) return;
-      const status = event.status || "pass";
-      const when = event.observed_at || event.changed_at;
-      if (!when) return;
-
-      if (status === "pass") {
-        bucket.statusByIdentity.delete(event.identity);
-      } else {
-        bucket.statusByIdentity.set(event.identity, {
-          status,
-          reason: event.reason || current.observation?.reason || current.name,
-        });
-      }
-
-      const worstStatus = worstStatusFor(bucket.statusByIdentity);
-      if (worstStatus === "pass") {
-        closeInterval(bucket, when);
-        return;
-      }
-
-      const reasons = reasonsFor(bucket.statusByIdentity);
-      if (!bucket.open) {
-        bucket.open = {
-          targetKey,
-          targetName: bucket.target.name,
-          status: worstStatus,
-          reasons,
-          start: when,
-          end: "",
-        };
-        return;
-      }
-      if (bucket.open.status !== worstStatus) {
-        closeInterval(bucket, when);
-        bucket.open = {
-          targetKey,
-          targetName: bucket.target.name,
-          status: worstStatus,
-          reasons,
-          start: when,
-          end: "",
-        };
-        return;
-      }
-      bucket.open.reasons = reasons;
-    });
-
-  state.current.forEach((item) => {
-    const status = item.observation?.status || "pass";
-    if (status === "pass") return;
-    const targetKey = targetFor(item).key;
-    const bucket = targetStates.get(targetKey);
-    if (!bucket || bucket.statusByIdentity.has(item.identity)) return;
-
-    bucket.statusByIdentity.set(item.identity, {
-      status,
-      reason: item.observation?.reason || item.name,
-    });
-    const start = item.observation?.changed_at || item.observation?.observed_at;
-    if (!start) return;
-    if (!bucket.open) {
-      bucket.open = {
-        targetKey,
-        targetName: bucket.target.name,
-        status,
-        reasons: reasonsFor(bucket.statusByIdentity),
-        start,
-        end: "",
-      };
-      return;
-    }
-    if (Date.parse(start) < Date.parse(bucket.open.start)) {
-      bucket.open.start = start;
-    }
-    bucket.open.status = worstStatusFor(bucket.statusByIdentity);
-    bucket.open.reasons = reasonsFor(bucket.statusByIdentity);
-  });
-
-  const intervals = [];
-  targetStates.forEach((bucket) => {
-    if (bucket.open) intervals.push(bucket.open);
-    intervals.push(...bucket.intervals);
-  });
-  return intervals;
-}
-
-function closeInterval(bucket, end) {
-  if (!bucket.open) return;
-  bucket.open.end = end;
-  bucket.intervals.push(bucket.open);
-  bucket.open = null;
-}
-
-function worstStatusFor(statuses) {
-  let worst = "pass";
-  statuses.forEach(({ status }) => {
-    if (rank(status) > rank(worst)) worst = status;
-  });
-  return worst;
-}
-
-function reasonsFor(statuses) {
-  return [...statuses.values()]
-    .filter(({ reason }) => reason)
-    .map(({ status, reason }) => `${status}: ${reason}`)
-    .slice(0, 4);
+  const max = Math.max(1, ...buckets.map((b) => b.warn + b.fail));
+  const bars = buckets.map((b) => {
+    const failH = (b.fail / max) * 100;
+    const warnH = (b.warn / max) * 100;
+    const title = `${formatTime(b.t)} · ${b.warn} warn · ${b.fail} fail`;
+    return `<div class="chartCol" title="${esc(title)}">
+      <div class="chartCell warn" style="height:${warnH}%;"></div>
+      <div class="chartCell fail" style="height:${failH}%;"></div>
+    </div>`;
+  }).join("");
+  const axis = [buckets[0]?.t, buckets[Math.floor(buckets.length / 2)]?.t, new Date().toISOString()]
+    .map((t) => `<span>${esc(formatTime(t))}</span>`).join("");
+  container.innerHTML = `<div class="chartBars">${bars}</div><div class="chartAxis">${axis}</div>`;
 }
 
 function isGlobalIncident(incident) {
@@ -582,55 +351,6 @@ function incidentTypeName(incident) {
 
 function cssToken(value) {
   return String(value || "").replace(/[^a-z0-9_-]/gi, "");
-}
-
-function incidentSpan(incident, now) {
-  const start = incident.created_at;
-  const end = incident.status === "closed" ? (incident.last_updated_at || incident.created_at) : now;
-  return { start, end };
-}
-
-function latestIncidentEvent(incident) {
-  const events = incident.events || [];
-  return events.length ? events[events.length - 1] : null;
-}
-
-function incidentTooltip(incident, span) {
-  const typeName = incidentTypeName(incident);
-  const latest = latestIncidentEvent(incident);
-  const lines = [
-    `${typeName}: ${incident.title}`,
-    `Status: ${incident.status || "unknown"}`,
-    `Source: ${incident.source || "unknown"}`,
-    `Started: ${formatDateTime(span.start)}`,
-    `Updated: ${formatDateTime(incident.last_updated_at)}`,
-  ];
-  if (latest) {
-    lines.push(`Latest event: ${[latest.topic, latest.message].filter(Boolean).join(" - ")}`);
-  }
-  return lines.filter(Boolean).join("\n");
-}
-
-function incidentTimelineItems(rangeStart, now) {
-  return state.incidents
-    .map((incident) => ({ incident, span: incidentSpan(incident, now) }))
-    .filter(({ span }) => intervalOverlapsWindow(span, rangeStart, now))
-    .map(({ incident, span }) => {
-      const typeName = incidentTypeName(incident);
-      const global = isGlobalIncident(incident);
-      const label = `${typeName}: ${incident.title}`;
-      return {
-        id: `incident-${incident.identity}`,
-        content: esc(label),
-        title: esc(incidentTooltip(incident, span)),
-        start: span.start,
-        end: span.end,
-        type: global ? "background" : "range",
-        className: global
-          ? `timeline-global timeline-global-${cssToken(typeName)}`
-          : `timeline-incident timeline-${cssToken(incident.severity || "warn")}`,
-      };
-    });
 }
 
 function filteredIncidents() {
@@ -689,13 +409,6 @@ function formatTime(value) {
   return d.toLocaleTimeString();
 }
 
-function formatDateTime(value) {
-  if (!value) return "";
-  const d = new Date(value);
-  if (Number.isNaN(d.getTime())) return value;
-  return d.toLocaleString();
-}
-
 function formatAge(value) {
   const seconds = Number(value);
   if (!Number.isFinite(seconds)) return "";
@@ -712,10 +425,6 @@ function secondsSince(value) {
   const timestamp = Date.parse(value);
   if (Number.isNaN(timestamp)) return "";
   return Math.max(0, Math.floor((Date.now() - timestamp) / 1000));
-}
-
-function currentRecord(identity) {
-  return state.current.find((item) => item.identity === identity) || null;
 }
 
 function yamlScalar(value) {
@@ -737,6 +446,32 @@ function yamlKey(key) {
 
 function isEmptyContainer(value) {
   return Array.isArray(value) ? value.length === 0 : Object.keys(value).length === 0;
+}
+
+// highlightYAML tokenizes toYAML output into colored spans. It only needs to
+// understand the YAML this UI generates: one node per line, plain or
+// JSON-quoted keys, scalar values.
+function highlightYAML(yaml) {
+  return yaml.split("\n").map((line) => {
+    const m = line.match(/^(\s*)((?:- )*)((?:"(?:[^"\\]|\\.)*"|[A-Za-z0-9_.-]+):)?( ?)(.*)$/);
+    if (!m) return esc(line);
+    const [, indent, dashes, key, space, rest] = m;
+    return esc(indent)
+      + (dashes ? `<span class="yDash">${esc(dashes)}</span>` : "")
+      + (key ? `<span class="yKey">${esc(key)}</span>` : "")
+      + space
+      + yamlValueHTML(rest);
+  }).join("\n");
+}
+
+function yamlValueHTML(value) {
+  if (value === "") return "";
+  const cls =
+    /^-?\d+(\.\d+)?$/.test(value) ? "yNum"
+    : (value === "true" || value === "false") ? "yBool"
+    : (value === "null" || value === "[]" || value === "{}") ? "yNull"
+    : "yStr";
+  return `<span class="${cls}">${esc(value)}</span>`;
 }
 
 // toYAML renders a plain JSON value as a YAML document fragment indented under
@@ -775,14 +510,18 @@ function toYAML(value, indent = 0) {
 let drawerYaml = "";
 
 function openStateDrawer(identity) {
-  const record = currentRecord(identity);
+  const record = state.byId.get(identity) || null;
   $("stateDrawerTitle").textContent = record?.name || identity;
   $("stateDrawerSub").textContent = record?.identity || identity;
   if (record) {
-    const { observation, ...metadata } = record;
-    $("stateDrawerObservation").textContent = observation ? toYAML(observation) : "# no observation recorded";
-    $("stateDrawerMetadata").textContent = toYAML(metadata);
-    drawerYaml = toYAML(record);
+    const {
+      status, reason, changed_at, updated_at, observed_at, data, data_hash, checks,
+      ...metadata
+    } = record;
+    const observation = { status, reason, changed_at, updated_at, observed_at, data, data_hash };
+    $("stateDrawerObservation").innerHTML = highlightYAML(toYAML(observation));
+    $("stateDrawerMetadata").innerHTML = highlightYAML(toYAML(metadata));
+    drawerYaml = toYAML({ ...observation, ...metadata });
   } else {
     $("stateDrawerObservation").textContent = `# state ${identity} not found`;
     $("stateDrawerMetadata").textContent = "";
@@ -819,13 +558,9 @@ $("incidentFilter").addEventListener("change", (e) => {
   state.incidentFilter = e.target.value;
   render();
 });
-$("projectionMode").addEventListener("change", (e) => {
-  state.projectionMode = e.target.value;
-  refresh().catch(showError);
-});
 $("timelineWindow").addEventListener("change", (e) => {
   state.timelineWindowMs = Number(e.target.value) || 60 * 60 * 1000;
-  renderSystemTimeline();
+  refresh().catch(showError);
 });
 $("refresh").addEventListener("click", () => refresh().catch(showError));
 

@@ -78,7 +78,7 @@ func TestHandlerRendersStorageCounts(t *testing.T) {
 		t.Fatalf("status = %d", response.Code)
 	}
 	body := response.Body.String()
-	for _, want := range []string{"*storage.MemoryStore", "Current states", "Targets", "2026-06-09T10:01:00Z", "/api/state/current"} {
+	for _, want := range []string{"*storage.MemoryStore", "Current states", "Targets", "2026-06-09T10:01:00Z", "/api/state/summary"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("storage page missing %q:\n%s", want, body)
 		}

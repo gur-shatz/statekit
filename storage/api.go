@@ -3,6 +3,7 @@ package storage
 import (
 	"embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -16,26 +17,77 @@ import (
 //go:embed openapi.yaml
 var openAPIFS embed.FS
 
+const (
+	defaultTimelineWindow  = 24 * time.Hour
+	defaultTimelineBuckets = 64
+)
+
 type API struct {
 	store Store
+	chart ChartStore
 }
 
-func NewAPI(store Store) *API {
-	return &API{store: store}
+type APIOption func(*API)
+
+// WithChart mounts the charting endpoints on a specific chart store. Without
+// it, NewAPI uses the store's own chart store when the store exposes one
+// (MemoryStore does).
+func WithChart(chart ChartStore) APIOption {
+	return func(a *API) {
+		a.chart = chart
+	}
+}
+
+// ChartProvider is implemented by stores that own a charting store.
+type ChartProvider interface {
+	Chart() ChartStore
+}
+
+func NewAPI(store Store, opts ...APIOption) *API {
+	api := &API{store: store}
+	for _, opt := range opts {
+		opt(api)
+	}
+	if api.chart == nil {
+		if provider, ok := store.(ChartProvider); ok {
+			api.chart = provider.Chart()
+		}
+	}
+	return api
+}
+
+type route struct {
+	Method  string
+	Pattern string
+	Handler http.HandlerFunc
+}
+
+// routes is the single registration table; the OpenAPI contract test checks
+// it against the embedded spec in both directions.
+func (a *API) routes() []route {
+	return []route{
+		{"GET", "/openapi.yaml", a.handleOpenAPI},
+		{"GET", "/state/summary", a.handleSummary},
+		{"GET", "/state/targets", a.handleTargets},
+		{"GET", "/state/targets/{key...}", a.handleTargetDetail},
+		{"GET", "/state/states/{identity}", a.handleStateDetail},
+		{"GET", "/state/states/{identity}/timeline", a.handleStateTimeline},
+		{"GET", "/state/timeline", a.handleChartTimeline},
+		{"GET", "/state/timeline/bucket", a.handleChartBucket},
+		{"POST", "/state/doc", a.handleIngestDocument},
+		{"GET", "/escalations/incidents", a.handleIncidents},
+		{"GET", "/escalations/incidents/{source}/{id}", a.handleIncidentDetail},
+		{"POST", "/escalations/doc", a.handleIngestEscalations},
+		{"POST", "/escalations/ack", a.handleAcknowledgeIncident},
+		{"POST", "/escalations/global", a.handleGlobalIncident},
+	}
 }
 
 func (a *API) Handler() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /openapi.yaml", a.handleOpenAPI)
-	mux.HandleFunc("GET /state/current", a.handleCurrent)
-	mux.HandleFunc("GET /state/targets", a.handleTargets)
-	mux.HandleFunc("GET /state/groups", a.handleGroups)
-	mux.HandleFunc("GET /state/events", a.handleEvents)
-	mux.HandleFunc("POST /state/doc", a.handleIngestDocument)
-	mux.HandleFunc("GET /escalations/incidents", a.handleIncidents)
-	mux.HandleFunc("POST /escalations/doc", a.handleIngestEscalations)
-	mux.HandleFunc("POST /escalations/ack", a.handleAcknowledgeIncident)
-	mux.HandleFunc("POST /escalations/global", a.handleGlobalIncident)
+	for _, r := range a.routes() {
+		mux.HandleFunc(r.Method+" "+r.Pattern, r.Handler)
+	}
 	return mux
 }
 
@@ -49,32 +101,106 @@ func (a *API) handleOpenAPI(w http.ResponseWriter, _ *http.Request) {
 	_, _ = w.Write(data)
 }
 
-func (a *API) handleCurrent(w http.ResponseWriter, r *http.Request) {
-	items, err := a.store.Current(r.Context(), filterFromRequest(r))
-	writeJSON(w, items, err)
+func (a *API) handleSummary(w http.ResponseWriter, r *http.Request) {
+	summary, err := a.store.Summary(r.Context())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSONETag(w, r, summary.FleetHash, summary)
 }
 
 func (a *API) handleTargets(w http.ResponseWriter, r *http.Request) {
-	items, err := a.store.Targets(r.Context())
-	writeJSON(w, items, err)
-}
-
-func (a *API) handleGroups(w http.ResponseWriter, r *http.Request) {
-	query := GroupQuery{
-		By:     groupByFromRequest(r),
-		Filter: filterFromRequest(r),
+	summary, err := a.store.Summary(r.Context())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
 	}
-	items, err := a.store.Groups(r.Context(), query)
-	writeJSON(w, items, err)
+	items, err := a.store.Targets(r.Context())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSONETag(w, r, summary.FleetHash, items)
 }
 
-func (a *API) handleEvents(w http.ResponseWriter, r *http.Request) {
-	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-	items, err := a.store.Events(r.Context(), EventFilter{
-		Identity: r.URL.Query().Get("identity"),
-		Limit:    limit,
-	})
-	writeJSON(w, items, err)
+func (a *API) handleTargetDetail(w http.ResponseWriter, r *http.Request) {
+	detail, err := a.store.TargetDetail(r.Context(), r.PathValue("key"))
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	writeJSONETag(w, r, detail.MaterialHash, detail)
+}
+
+func (a *API) handleStateDetail(w http.ResponseWriter, r *http.Request) {
+	detail, err := a.store.StateDetail(r.Context(), r.PathValue("identity"))
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	writeJSONETag(w, r, stateDetailETag(detail), detail)
+}
+
+func (a *API) handleStateTimeline(w http.ResponseWriter, r *http.Request) {
+	timeline, err := a.store.StateTimeline(r.Context(), r.PathValue("identity"))
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	writeJSONETag(w, r, hashJSON(timeline.Transitions), timeline)
+}
+
+func (a *API) handleChartTimeline(w http.ResponseWriter, r *http.Request) {
+	if a.chart == nil {
+		http.Error(w, "charting store not configured", http.StatusNotFound)
+		return
+	}
+	q := r.URL.Query()
+	window := defaultTimelineWindow
+	if value := q.Get("window"); value != "" {
+		parsed, err := time.ParseDuration(value)
+		if err != nil || parsed <= 0 {
+			http.Error(w, fmt.Sprintf("invalid window %q", value), http.StatusBadRequest)
+			return
+		}
+		window = parsed
+	}
+	buckets := defaultTimelineBuckets
+	if value := q.Get("buckets"); value != "" {
+		parsed, err := strconv.Atoi(value)
+		if err != nil || parsed <= 0 {
+			http.Error(w, fmt.Sprintf("invalid buckets %q", value), http.StatusBadRequest)
+			return
+		}
+		buckets = parsed
+	}
+	to := time.Now()
+	out, err := a.chart.Range(q.Get("scope"), to.Add(-window), to, buckets)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	writeJSONETag(w, r, hashJSON(out), out)
+}
+
+func (a *API) handleChartBucket(w http.ResponseWriter, r *http.Request) {
+	if a.chart == nil {
+		http.Error(w, "charting store not configured", http.StatusNotFound)
+		return
+	}
+	q := r.URL.Query()
+	t, err := time.Parse(time.RFC3339Nano, q.Get("t"))
+	if err != nil {
+		http.Error(w, fmt.Sprintf("invalid t: %v", err), http.StatusBadRequest)
+		return
+	}
+	out, err := a.chart.Bucket(q.Get("scope"), t)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	writeJSONETag(w, r, hashJSON(out), out)
 }
 
 func (a *API) handleIngestDocument(w http.ResponseWriter, r *http.Request) {
@@ -106,11 +232,29 @@ func (a *API) handleIncidents(w http.ResponseWriter, r *http.Request) {
 		ID:     r.URL.Query().Get("id"),
 		Type:   r.URL.Query().Get("type"),
 	})
-	if strings.Contains(r.Header.Get("Accept"), "application/json") {
-		writeJSON(w, items, err)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	writeYAML(w, items, err)
+	// The list is a summary: events ride only on the per-incident detail
+	// endpoint.
+	for i := range items {
+		items[i].Events = nil
+	}
+	if strings.Contains(r.Header.Get("Accept"), "application/json") {
+		writeJSONETag(w, r, incidentsETag(items), items)
+		return
+	}
+	writeYAML(w, items, nil)
+}
+
+func (a *API) handleIncidentDetail(w http.ResponseWriter, r *http.Request) {
+	incident, err := a.findIncident(r, r.PathValue("source"), r.PathValue("id"))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	writeJSONETag(w, r, incidentsETag([]Incident{incident}), incident)
 }
 
 func (a *API) handleIngestEscalations(w http.ResponseWriter, r *http.Request) {
@@ -313,37 +457,75 @@ func (a *API) handleAcknowledgeIncident(w http.ResponseWriter, r *http.Request) 
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func filterFromRequest(r *http.Request) CurrentFilter {
-	q := r.URL.Query()
-	filter := CurrentFilter{
-		Status:    q.Get("status"),
-		GroupName: q.Get("group_name"),
-		Labels:    map[string]string{},
-	}
-	for key, values := range q {
-		if !strings.HasPrefix(key, "label.") || len(values) == 0 {
-			continue
-		}
-		filter.Labels[strings.TrimPrefix(key, "label.")] = values[len(values)-1]
-	}
-	if len(filter.Labels) == 0 {
-		filter.Labels = nil
-	}
-	return filter
+// stateDetailETag hashes the material content of a state detail, excluding
+// volatile timestamps that move on every scrape, so an unchanged state polls
+// as 304.
+func stateDetailETag(detail StateDetail) string {
+	return hashJSON(map[string]any{
+		"identity":        detail.Identity,
+		"parent_identity": detail.ParentIdentity,
+		"name":            detail.Name,
+		"status":          detail.Status,
+		"reason":          detail.Reason,
+		"importance":      detail.Importance,
+		"help":            detail.Help,
+		"group_name":      detail.GroupName,
+		"labels":          detail.Labels,
+		"changed_at":      detail.ChangedAt,
+		"data_hash":       detail.DataHash,
+		"children":        detail.Children,
+	})
 }
 
-func groupByFromRequest(r *http.Request) []string {
-	q := r.URL.Query()
-	var out []string
-	for _, value := range q["by"] {
-		for _, part := range strings.Split(value, ",") {
-			part = strings.TrimSpace(part)
-			if part != "" {
-				out = append(out, part)
-			}
+// incidentsETag hashes incident content excluding observed_at, which bumps on
+// every scrape without the incidents changing.
+func incidentsETag(items []Incident) string {
+	fields := make([]map[string]any, 0, len(items))
+	for _, incident := range items {
+		fields = append(fields, map[string]any{
+			"identity":        incident.Identity,
+			"status":          incident.Status,
+			"title":           incident.Title,
+			"severity":        incident.Severity,
+			"last_updated_at": incident.LastUpdatedAt,
+			"events":          len(incident.Events),
+		})
+	}
+	return hashJSON(fields)
+}
+
+// writeJSONETag writes value as JSON with a strong ETag, answering 304 when
+// If-None-Match matches.
+func writeJSONETag(w http.ResponseWriter, r *http.Request, etag string, value any) {
+	tag := `"` + etag + `"`
+	w.Header().Set("ETag", tag)
+	if ifNoneMatchSatisfied(r.Header.Get("If-None-Match"), tag) {
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
+	writeJSON(w, value, nil)
+}
+
+func ifNoneMatchSatisfied(header, tag string) bool {
+	if header == "" {
+		return false
+	}
+	for _, candidate := range strings.Split(header, ",") {
+		candidate = strings.TrimSpace(candidate)
+		candidate = strings.TrimPrefix(candidate, "W/")
+		if candidate == "*" || candidate == tag {
+			return true
 		}
 	}
-	return out
+	return false
+}
+
+func writeStoreError(w http.ResponseWriter, err error) {
+	if errors.Is(err, ErrNotFound) {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	http.Error(w, err.Error(), http.StatusInternalServerError)
 }
 
 func writeJSON(w http.ResponseWriter, value any, err error) {

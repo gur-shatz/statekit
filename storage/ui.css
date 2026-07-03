@@ -185,26 +185,19 @@ button:hover { border-color: #1f6feb; }
   letter-spacing: 0.04em;
   margin-bottom: 5px;
 }
-.dataGrid {
-  display: grid;
-  gap: 3px 12px;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-}
-.dataPair {
-  display: flex;
-  gap: 6px;
-  min-width: 0;
-  align-items: baseline;
-  font-size: 12px;
-}
-.dataKey { color: #647082; flex: 0 1 auto; }
-.dataVal {
+.dataYaml {
+  margin: 0;
+  font: 12px/1.6 ui-monospace, "SF Mono", Menlo, monospace;
   color: #1f2937;
-  font-weight: 620;
-  font-variant-numeric: tabular-nums;
-  flex: 1 1 auto;
-  text-align: right;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
+.dataYaml .yKey, .drawerYaml .yKey { color: #0550ae; }
+.dataYaml .yStr, .drawerYaml .yStr { color: #0a3069; }
+.dataYaml .yNum, .drawerYaml .yNum { color: #953800; }
+.dataYaml .yBool, .drawerYaml .yBool { color: #cf222e; }
+.dataYaml .yNull, .drawerYaml .yNull { color: #6e7781; }
+.dataYaml .yDash, .drawerYaml .yDash { color: #6e7781; }
 .cardMeta {
   display: flex;
   flex-wrap: wrap;
@@ -230,73 +223,35 @@ button:hover { border-color: #1f6feb; }
 }
 .checkRow.clickable { cursor: pointer; border-radius: 6px; }
 .checkRow.clickable:hover { color: #1f6feb; background: #f1f6ff; }
-.systemTimelineViz {
-  min-height: 360px;
+.fleetChart {
+  padding: 8px 4px 4px;
 }
-.systemTimelineViz .vis-timeline {
-  border: 0;
+.chartBars {
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: 140px;
+  border-bottom: 1px solid #e3e8ef;
 }
-.systemTimelineViz .vis-custom-time.now-marker {
-  background: #1f6feb;
-  width: 2px;
+.chartCol {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
 }
-.systemTimelineViz .vis-custom-time.now-marker::after {
-  content: "now";
-  position: absolute;
-  top: 6px;
-  right: 5px;
-  border-radius: 999px;
-  background: #1f6feb;
-  color: #fff;
-  font-size: 11px;
-  font-weight: 760;
-  line-height: 1;
-  padding: 3px 6px;
+.chartCell.warn { background: #e1bd56; }
+.chartCell.fail { background: #e59690; }
+.chartCol:hover .chartCell.warn { background: #c9a53e; }
+.chartCol:hover .chartCell.fail { background: #d3766e; }
+.chartAxis {
+  display: flex;
+  justify-content: space-between;
+  padding-top: 6px;
+  color: #647082;
+  font-size: 12px;
 }
-.vis-item.timeline-pass {
-  background: #dff7e8;
-  border-color: #8ed5aa;
-  color: #14683a;
-}
-.vis-item.timeline-warn {
-  background: #fff2c6;
-  border-color: #e1bd56;
-  color: #8a5a00;
-}
-.vis-item.timeline-fail {
-  background: #ffe1df;
-  border-color: #e59690;
-  color: #9b1c16;
-}
-.vis-item.timeline-down {
-  background: #e5e7eb;
-  border-color: #aeb4be;
-  color: #111827;
-}
-.vis-item.timeline-incident {
-  border-style: dashed;
-  border-width: 2px;
-}
-.vis-item.vis-background.timeline-global {
-  opacity: 0.85;
-}
-.vis-item.vis-background.timeline-global .vis-item-content {
-  position: sticky;
-  top: 0;
-  display: inline-block;
-  margin: 2px 0 0 2px;
-  border-radius: 4px;
-  padding: 1px 6px;
-  font-size: 11px;
-  font-weight: 760;
-  color: #fff;
-}
-.vis-item.vis-background.timeline-global-build { background: rgba(31, 111, 235, 0.10); border-left: 2px solid #1f6feb; }
-.vis-item.vis-background.timeline-global-build .vis-item-content { background: #1f6feb; }
-.vis-item.vis-background.timeline-global-deployment { background: rgba(124, 58, 237, 0.10); border-left: 2px solid #7c3aed; }
-.vis-item.vis-background.timeline-global-deployment .vis-item-content { background: #7c3aed; }
-.vis-item.vis-background.timeline-global-rollback { background: rgba(234, 88, 12, 0.12); border-left: 2px solid #ea580c; }
-.vis-item.vis-background.timeline-global-rollback .vis-item-content { background: #ea580c; }
 .typeChip {
   display: inline-flex;
   border-radius: 999px;
@@ -315,10 +270,6 @@ button:hover { border-color: #1f6feb; }
 .incidentStatus.status-closed { color: #1f2937; }
 .incidentStatus.status-acknowledged { color: #14683a; }
 .ackButton { min-height: 28px; padding: 3px 10px; font-size: 12px; }
-.vis-item .vis-item-content {
-  font-size: 12px;
-  font-weight: 680;
-}
 .truncate { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .empty { padding: 16px; color: #647082; }
 

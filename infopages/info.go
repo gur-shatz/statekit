@@ -51,11 +51,9 @@ type registryData struct {
 
 type storageData struct {
 	Type             string
-	CurrentCount     int
+	StateCount       int
 	TargetCount      int
-	EventCount       int
 	IncidentCount    int
-	GroupCount       int
 	StatusCounts     map[string]int
 	LastObservedAt   time.Time
 	EndpointRows     []endpoint
@@ -191,15 +189,7 @@ func registryPageData(reg *statekit.Registry, base string) *registryData {
 }
 
 func storagePageData(ctx context.Context, store storage.Store, apiBase string) (*storageData, error) {
-	current, err := store.Current(ctx, storage.CurrentFilter{})
-	if err != nil {
-		return nil, err
-	}
-	targets, err := store.Targets(ctx)
-	if err != nil {
-		return nil, err
-	}
-	events, err := store.Events(ctx, storage.EventFilter{})
+	summary, err := store.Summary(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -207,32 +197,22 @@ func storagePageData(ctx context.Context, store storage.Store, apiBase string) (
 	if err != nil {
 		return nil, err
 	}
-	groups, err := store.Groups(ctx, storage.GroupQuery{})
-	if err != nil {
-		return nil, err
-	}
 	out := &storageData{
-		Type:          reflect.TypeOf(store).String(),
-		CurrentCount:  len(current),
-		TargetCount:   len(targets),
-		EventCount:    len(events),
-		IncidentCount: len(incidents),
-		GroupCount:    len(groups),
-		StatusCounts:  map[string]int{},
+		Type:           reflect.TypeOf(store).String(),
+		TargetCount:    summary.Targets.Total,
+		IncidentCount:  len(incidents),
+		StatusCounts:   summary.StatusCounts,
+		LastObservedAt: summary.ObservedAt,
 		EndpointRows: []endpoint{
-			{Path: joinBase(apiBase, "/state/current"), Description: "Current flattened states"},
-			{Path: joinBase(apiBase, "/state/targets"), Description: "Target documents"},
-			{Path: joinBase(apiBase, "/state/groups"), Description: "Grouped current states"},
-			{Path: joinBase(apiBase, "/state/events"), Description: "Transition events"},
+			{Path: joinBase(apiBase, "/state/summary"), Description: "Fleet rollup"},
+			{Path: joinBase(apiBase, "/state/targets"), Description: "Target summaries with state headers"},
+			{Path: joinBase(apiBase, "/state/timeline"), Description: "Bucketed triggering-state counts"},
 			{Path: joinBase(apiBase, "/escalations/incidents"), Description: "Stored escalation incidents"},
 			{Path: joinBase(apiBase, "/openapi.yaml"), Description: "Storage API contract"},
 		},
 	}
-	for _, item := range current {
-		out.StatusCounts[item.Observation.Status]++
-		if item.Observation.ObservedAt.After(out.LastObservedAt) {
-			out.LastObservedAt = item.Observation.ObservedAt
-		}
+	for _, count := range summary.StatusCounts {
+		out.StateCount += count
 	}
 	if out.LastObservedAt.IsZero() {
 		out.LastObservedText = "never"

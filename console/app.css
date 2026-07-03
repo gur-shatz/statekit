@@ -271,11 +271,16 @@ header.appbar {
 .detailSection { margin-top: 20px; }
 .detailSection .head { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 9px; }
 
-.dataBlock { background: #0a0e15; border: 1px solid var(--border-2); border-radius: 9px; padding: 11px 14px; display: flex; flex-direction: column; gap: 3px; }
-.dataRow { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; }
-.dataKey { font: 400 11px var(--mono); color: #7d8a9b; }
-.dataKey.header { color: var(--muted-2); font-weight: 600; }
-.dataVal { font: 500 11px var(--mono); text-align: right; word-break: break-all; }
+.dataBlock { background: #0a0e15; border: 1px solid var(--border-2); border-radius: 9px; padding: 11px 14px; }
+.dataYaml { margin: 0; font: 400 11px/1.7 var(--mono); color: #c4cedb; white-space: pre-wrap; word-break: break-word; }
+.dataYaml .yKey { color: #79c0ff; }
+.dataYaml .yStr { color: #a5d6ff; }
+.dataYaml .yNum { color: #f2cc60; }
+.dataYaml .yBool { color: #ff7b72; }
+.dataYaml .yNull { color: #8b949e; }
+.dataYaml .yDash { color: #8b949e; }
+.detailLabels { display: flex; flex-wrap: wrap; gap: 6px; }
+.labelChip { font: 400 11px var(--mono); color: #9aa7b8; background: var(--panel-3); border: 1px solid var(--border-2); border-radius: 999px; padding: 3px 9px; }
 
 .childList { display: flex; flex-direction: column; gap: 5px; }
 .childRow { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 13px; border-radius: 8px; cursor: pointer; background: var(--panel-3); border: 1px solid var(--border-2); border-left: 2px solid rgba(255, 255, 255, .06); transition: background .1s ease; }
