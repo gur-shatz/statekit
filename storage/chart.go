@@ -42,6 +42,10 @@ type BucketCounts struct {
 
 const chartScopeFleet = "fleet"
 
+// MemoryChartStore is the in-memory ChartStore backend and currently the only
+// implementation; a file or tsdb backend would assert the same interface.
+var _ ChartStore = (*MemoryChartStore)(nil)
+
 // MemoryChartStore keeps a fixed ring of time buckets in memory. Writes for a
 // bucket older than the window overwrite the slot round-robin, so memory is
 // bounded by window x contemporaneous triggering states.

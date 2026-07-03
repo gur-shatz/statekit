@@ -193,6 +193,8 @@ const (
 	evictionIntervalFactor = 10
 )
 
+var _ Store = (*MemoryStore)(nil)
+
 type MemoryStore struct {
 	mu sync.RWMutex
 
@@ -204,6 +206,7 @@ type MemoryStore struct {
 	timelines       map[string]*transitionRing
 	transitionTotal int
 	chart           ChartStore
+	journal         *Journal
 	incidents       map[string]Incident
 	incidentEvents  map[string]map[string]IncidentEvent
 	incidentIndex   map[string]map[string]struct{} // source+"\n"+id -> incident identities
@@ -271,6 +274,15 @@ func WithChartStore(chart ChartStore) MemoryStoreOption {
 	}
 }
 
+// WithJournal persists L3 history (transitions and incidents) to the given
+// journal. NewMemoryStore replays it before serving, so history survives
+// restarts; every ring cap, dedup rule, and incident TTL still applies.
+func WithJournal(journal *Journal) MemoryStoreOption {
+	return func(s *MemoryStore) {
+		s.journal = journal
+	}
+}
+
 // WithEvictionFallback sets the liveness TTL used for sources whose ingest
 // interval has not been observed yet.
 func WithEvictionFallback(ttl time.Duration) MemoryStoreOption {
@@ -303,7 +315,83 @@ func NewMemoryStore(opts ...MemoryStoreOption) *MemoryStore {
 	for _, opt := range opts {
 		opt(store)
 	}
+	if store.journal != nil {
+		store.replayJournal()
+	}
 	return store
+}
+
+// replayJournal rehydrates L3 from the journal, then compacts the file back
+// to exactly the live state so stale and duplicate lines drop. Transitions
+// replay through the normal ring path (caps and dedup apply); identities
+// whose newest transition is older than the journal retention are skipped,
+// so identity churn cannot accumulate orphaned rings across restarts.
+func (this *MemoryStore) replayJournal() {
+	journal := this.journal
+	this.journal = nil // appends during replay would echo entries back
+	entries, err := journal.read()
+	if err != nil {
+		journal.setErr(err)
+		this.journal = journal
+		return
+	}
+	now := time.Now()
+	cutoff := now.Add(-journal.retention)
+
+	transitions := map[string][]Transition{}
+	for _, entry := range entries {
+		switch {
+		case entry.Kind == "transition" && entry.Transition != nil && entry.Identity != "":
+			transitions[entry.Identity] = append(transitions[entry.Identity], *entry.Transition)
+		case entry.Kind == "incident" && entry.Incident != nil:
+			this.replayIncident(*entry.Incident)
+		}
+	}
+	for identity, list := range transitions {
+		newest := list[0].ChangedAt
+		for _, transition := range list {
+			if transition.ChangedAt.After(newest) {
+				newest = transition.ChangedAt
+			}
+		}
+		if newest.Before(cutoff) {
+			continue
+		}
+		this.appendTransitions(identity, list)
+	}
+	this.sweepClosedIncidents(now)
+	this.journal = journal
+	this.compactJournal()
+}
+
+// replayIncident restores one journaled incident upsert; later entries for
+// the same incident win, matching ingest semantics.
+func (this *MemoryStore) replayIncident(incident Incident) {
+	events := map[string]IncidentEvent{}
+	for _, event := range incident.Events {
+		events[event.EventKey] = event
+	}
+	this.incidentEvents[incident.Identity] = events
+	this.incidents[incident.Identity] = incident
+	this.indexIncident(incident)
+}
+
+// compactJournal rewrites the journal from live state. Callers hold the
+// write lock (or run before the store is shared).
+func (this *MemoryStore) compactJournal() {
+	var entries []journalEntry
+	for identity, ring := range this.timelines {
+		for _, transition := range ring.entries {
+			t := transition
+			entries = append(entries, journalEntry{Kind: "transition", Identity: identity, Transition: &t})
+		}
+	}
+	for identity, incident := range this.incidents {
+		incident.Events = sortedIncidentEvents(this.incidentEvents[identity])
+		in := incident
+		entries = append(entries, journalEntry{Kind: "incident", Incident: &in})
+	}
+	_ = this.journal.rewrite(entries)
 }
 
 // Chart exposes the charting store so its endpoints can be mounted beside the
@@ -368,6 +456,9 @@ func (this *MemoryStore) IngestDocument(ctx context.Context, doc statekit.StateD
 	this.sweepExpiredScopes(docKey, observedAt)
 	this.sweepClosedIncidents(observedAt)
 	this.refreshFleetRollup(observedAt)
+	if this.journal != nil && this.journal.needsCompaction() {
+		this.compactJournal()
+	}
 	this.mu.Unlock()
 
 	this.chart.Record(observedAt, triggeringStates(entries))
@@ -399,6 +490,9 @@ func (this *MemoryStore) appendTransitions(identity string, transitions []Transi
 		added, dropped := ring.add(transition, this.transitionCap)
 		if added {
 			this.transitionTotal++
+			if this.journal != nil {
+				this.journal.appendTransition(identity, transition)
+			}
 		}
 		this.transitionTotal -= dropped
 	}
@@ -528,8 +622,14 @@ func (this *MemoryStore) IngestEscalations(_ context.Context, source string, doc
 		incident.Events = this.capIncidentEvents(events)
 		this.incidents[identity] = incident
 		this.indexIncident(incident)
+		if this.journal != nil {
+			this.journal.appendIncident(incident)
+		}
 	}
 	this.sweepClosedIncidents(observedAt)
+	if this.journal != nil && this.journal.needsCompaction() {
+		this.compactJournal()
+	}
 	return nil
 }
 
@@ -759,6 +859,9 @@ func (this *MemoryStore) AcknowledgeIncident(_ context.Context, source, id strin
 	}
 	incident.ObservedAt = at
 	this.incidents[identity] = incident
+	if this.journal != nil {
+		this.journal.appendIncident(incident)
+	}
 	return nil
 }
 

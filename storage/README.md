@@ -43,6 +43,58 @@ Labels are normalized into `map[string]string` so UIs and future SQL
 backends can group by dimensions such as `group_name`, `label:region`,
 or `label:service` without parsing serialized YAML.
 
+## File-based storage
+
+Only L3 goes to disk, and only optionally. The layer split states exactly
+where disk belongs:
+
+- **L1 never goes to disk.** It is the constantly polled current view,
+  O(fleet) and replaced on every ingest; it is rebuilt from the first scrape
+  cycle after a restart, so persisting it buys nothing.
+- **L2 needs at most snapshots.** It is current-only, so a warm-restart
+  snapshot (a periodic dump, not a log) is the most a file backend would
+  ever do for it. Like L1, it self-heals from the next scrape. Not
+  implemented today.
+- **L3 is the layer that pages to disk**, because it is the only layer that
+  grows with time — and it has two file backends:
+
+```go
+chart, _ := storage.NewFileChartStore(dir+"/chart", time.Minute, 24*60)
+journal, _ := storage.OpenJournal(dir + "/journal.ndjson")
+store := storage.NewMemoryStore(
+    storage.WithChartStore(chart),
+    storage.WithJournal(journal),
+)
+```
+
+**`FileChartStore`** is a write-through wrapper around the in-memory chart:
+every non-empty bucket write appends one NDJSON line to a day segment
+(`chart-YYYY-MM-DD.ndjson`), reads stay in memory, and opening the store
+replays the segments still inside the window and deletes the rest. A healthy
+fleet appends nothing and unchanged degraded buckets are deduplicated, so
+disk usage tracks how much was wrong inside the window, not uptime.
+
+**`Journal`** persists transitions and incidents as one NDJSON log.
+`NewMemoryStore` replays it through the normal ingest paths — ring caps,
+transition dedup, and incident TTL all apply — then compacts the file back
+to exactly the live state; it recompacts whenever the file outgrows its size
+bound (`WithJournalMaxSize`, default 4 MiB). Identities whose newest
+transition is older than the replay retention (`WithJournalRetention`,
+default 72h) are dropped, so identity churn cannot accumulate across
+restarts. After a restart the current layers stay empty until the next
+scrape, but timelines, incidents, and the chart come back.
+
+Two seams remain for heavier backends: `ChartStore` and `Store` are
+interfaces, so an embedded tsdb or SQL implementation drops in the same way,
+and **`material_hash`** is the change signal for a durable L2 flusher — a
+target summary's hash covers exactly its material content, so a flusher can
+write only what changed since the last flush, without diffing.
+
+The document cache (`WithDocumentCache`) is related but separate, and also
+in memory: it keeps the last raw ingested document per source as
+zstd-compressed YAML for `CachedDocumentYAML` — a debugging convenience,
+not a persistence layer.
+
 ## HTTP API
 
 ```go
