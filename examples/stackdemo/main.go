@@ -408,6 +408,9 @@ const homeHTML = `<!doctype html>
     button:disabled { border-color: #c9d1dd; background: #eef1f5; color: #9aa6b5; cursor: default; }
     .buttons { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
     .opsStatus { margin: 10px 0 0; color: #526070; font-size: 13px; }
+    .consoleBlurb { margin: 0 0 12px; color: #526070; font-size: 13px; }
+    .consoleLink { display: block; text-align: center; background: #1f6feb; color: #fff; border-radius: 6px; padding: 12px 10px; font-weight: 720; }
+    .consoleLink:hover { background: #1b5fc1; text-decoration: none; }
     @media (max-width: 820px) { .grid { grid-template-columns: 1fr; } }
   </style>
 </head>
@@ -434,19 +437,9 @@ const homeHTML = `<!doctype html>
         </ul>
       </section>
       <section class="panel">
-        <h2>Storage API</h2>
-        <ul>
-          <li><a href="/api/state/current">current states</a></li>
-          <li><a href="/api/state/groups?by=group_name">groups by group_name</a></li>
-          <li><a href="/api/state/groups?by=label:region">groups by region</a></li>
-          <li><a href="/api/state/events?limit=20">recent events</a></li>
-          <li><a href="/api/escalations/incidents">all incidents</a></li>
-          <li><a href="/api/escalations/incidents?type=deployment">deployment incidents</a></li>
-          <li><a href="/api/openapi.yaml">openapi.yaml</a></li>
-          <li><a href="/console/">fleet state console</a></li>
-          <li><a href="/storage/">storage console</a></li>
-          <li><a href="/info/">info pages</a></li>
-        </ul>
+        <h2>Console</h2>
+        <p class="consoleBlurb">Fleet state, incidents, and timeline in one dashboard.</p>
+        <a class="consoleLink" href="/console/">Open Fleet State Console</a>
       </section>
       <section class="panel">
         <h2>Fleet Ops</h2>
@@ -469,7 +462,7 @@ const homeHTML = `<!doctype html>
             <button type="button" id="opsClose" disabled>Close last</button>
           </div>
         </form>
-        <p class="opsStatus" id="opsStatus">Markers appear on the storage console timeline.</p>
+        <p class="opsStatus" id="opsStatus">Markers appear on the console timeline.</p>
       </section>
     </div>
     <h2>Config Files</h2>

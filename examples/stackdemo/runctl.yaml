@@ -25,9 +25,9 @@ targets:
       - name: Fleet state
         description: Aggregated fleet state
         url: "http://localhost:{{ .PORT }}/fleet/state"
-      - name: Storage groups
-        description: Storage API grouped by group_name
-        url: "http://localhost:{{ .PORT }}/api/state/groups?by=group_name"
+      - name: Storage summary
+        description: Storage API fleet rollup
+        url: "http://localhost:{{ .PORT }}/api/state/summary"
       - name: Incidents
         description: Stored support escalations
         url: "http://localhost:{{ .PORT }}/api/escalations/incidents"

@@ -36,14 +36,9 @@ Useful endpoints:
 /scraper/east/state           regional scraper state
 /scraper/west/state           regional scraper state
 /fleet/state                  fleet aggregator state
-/api/state/current            stored current states
-/api/state/groups?by=group_name
-/api/state/groups?by=label:region
-/api/state/events?limit=20
-/api/escalations/incidents
-/api/openapi.yaml
-/storage/                     storage console
-/info/                        mounted info pages for fleet config and storage
+/console/                     fleet state console dashboard
+/api/escalations/incidents    stored escalation incidents
+/api/openapi.yaml             storage API contract
 /-/quit                       stop the process when -kill-url is enabled
 ```
 
@@ -56,7 +51,7 @@ examples/stackdemo/config/fleet-aggregator.yaml
 ```
 
 Change a leaf state in the UI, wait a few seconds, then refresh the
-fleet state or storage API views to see the change propagate through
+fleet state view or the console to see the change propagate through
 both scraper layers.
 
 To try escalations, open a leaf component and use **Create Escalation**.
