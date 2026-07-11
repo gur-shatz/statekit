@@ -62,6 +62,7 @@ type journalEntry struct {
 	Identity   string      `json:"identity,omitempty"`
 	Transition *Transition `json:"transition,omitempty"`
 	Incident   *Incident   `json:"incident,omitempty"`
+	Mute       *StateMute  `json:"mute,omitempty"`
 }
 
 // OpenJournal opens (or creates) the journal file for appending. Replay does
@@ -118,6 +119,10 @@ func (this *Journal) appendTransition(identity string, transition Transition) {
 
 func (this *Journal) appendIncident(incident Incident) {
 	this.appendEntry(journalEntry{Kind: "incident", Incident: &incident})
+}
+
+func (this *Journal) appendMute(mute StateMute) {
+	this.appendEntry(journalEntry{Kind: "mute", Identity: mute.Identity, Mute: &mute})
 }
 
 func (this *Journal) appendEntry(entry journalEntry) {

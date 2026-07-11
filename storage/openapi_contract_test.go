@@ -83,6 +83,7 @@ func TestOpenAPIContract(t *testing.T) {
 	}
 	postBodies := map[string][2]string{
 		"/state/doc":          {"text/yaml", "kind: statekit.state.v1\nlabel_path:\n  - name: service\n    value: contract\nstates:\n  - name: contract-state\n    status: pass\n    importance: important\n    changed_at: " + now.Format(time.RFC3339) + "\n    changed_secs_ago: 0\n"},
+		"/state/mutes":        {"application/json", `{"identity":"` + substitutions["{identity}"] + `","status":"pass","duration":"30m","reason":"contract mute"}`},
 		"/escalations/doc":    {"text/yaml", "kind: statekit.escalation.v1\nincidents:\n  - id: contract-incident\n    title: contract\n    status: open\n    created_at: " + now.Format(time.RFC3339) + "\n    last_updated_at: " + now.Format(time.RFC3339) + "\n"},
 		"/escalations/global": {"application/json", `{"type":"deployment","title":"contract deploy"}`},
 	}

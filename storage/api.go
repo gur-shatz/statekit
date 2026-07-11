@@ -75,6 +75,9 @@ func (a *API) routes() []route {
 		{"GET", "/state/timeline", a.handleChartTimeline},
 		{"GET", "/state/timeline/bucket", a.handleChartBucket},
 		{"POST", "/state/doc", a.handleIngestDocument},
+		{"GET", "/state/mutes", a.handleMutes},
+		{"POST", "/state/mutes", a.handleUpsertMute},
+		{"DELETE", "/state/mutes/{identity}", a.handleDeleteMute},
 		{"GET", "/escalations/incidents", a.handleIncidents},
 		{"GET", "/escalations/incidents/{source}/{id}", a.handleIncidentDetail},
 		{"POST", "/escalations/doc", a.handleIngestEscalations},
@@ -219,6 +222,100 @@ func (a *API) handleIngestDocument(w http.ResponseWriter, r *http.Request) {
 		observedAt = parsed
 	}
 	if err := a.store.IngestDocument(r.Context(), doc, observedAt); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+type MuteRequest struct {
+	Identity  string `json:"identity"`
+	Status    string `json:"status"`
+	Reason    string `json:"reason,omitempty"`
+	Duration  string `json:"duration,omitempty"`
+	ExpiresAt string `json:"expires_at,omitempty"`
+}
+
+func (a *API) handleMutes(w http.ResponseWriter, r *http.Request) {
+	items, err := a.store.Mutes(r.Context())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSONETag(w, r, hashJSON(items), items)
+}
+
+func (a *API) handleUpsertMute(w http.ResponseWriter, r *http.Request) {
+	var req MuteRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if req.Identity == "" {
+		http.Error(w, "missing identity", http.StatusBadRequest)
+		return
+	}
+	if req.Status == "" {
+		http.Error(w, "missing status", http.StatusBadRequest)
+		return
+	}
+	now := time.Now()
+	expiresAt, err := parseMuteExpiry(req, now)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	mute, err := a.store.UpsertMute(r.Context(), StateMute{
+		Identity:  req.Identity,
+		Status:    strings.ToLower(req.Status),
+		Reason:    req.Reason,
+		CreatedAt: now,
+		UpdatedAt: now,
+		ExpiresAt: expiresAt,
+	})
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	writeJSON(w, mute, nil)
+}
+
+func parseMuteExpiry(req MuteRequest, now time.Time) (time.Time, error) {
+	if req.ExpiresAt != "" {
+		expiresAt, err := time.Parse(time.RFC3339Nano, req.ExpiresAt)
+		if err != nil {
+			return time.Time{}, fmt.Errorf("invalid expires_at: %w", err)
+		}
+		if !expiresAt.After(now) {
+			return time.Time{}, fmt.Errorf("expires_at must be in the future")
+		}
+		return expiresAt, nil
+	}
+	if req.Duration == "" {
+		return time.Time{}, fmt.Errorf("missing duration or expires_at")
+	}
+	duration, err := parseMuteDuration(req.Duration)
+	if err != nil || duration <= 0 {
+		return time.Time{}, fmt.Errorf("invalid duration %q", req.Duration)
+	}
+	return now.Add(duration), nil
+}
+
+// parseMuteDuration accepts Go durations plus a day suffix ("7d", "30d",
+// "365d"), which time.ParseDuration does not support.
+func parseMuteDuration(raw string) (time.Duration, error) {
+	if trimmed, ok := strings.CutSuffix(raw, "d"); ok {
+		days, err := strconv.Atoi(trimmed)
+		if err != nil {
+			return 0, fmt.Errorf("invalid duration %q", raw)
+		}
+		return time.Duration(days) * 24 * time.Hour, nil
+	}
+	return time.ParseDuration(raw)
+}
+
+func (a *API) handleDeleteMute(w http.ResponseWriter, r *http.Request) {
+	if err := a.store.DeleteMute(r.Context(), r.PathValue("identity")); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -474,6 +571,7 @@ func stateDetailETag(detail StateDetail) string {
 		"changed_at":      detail.ChangedAt,
 		"data_hash":       detail.DataHash,
 		"children":        detail.Children,
+		"mute":            detail.Mute,
 	})
 }
 

@@ -38,6 +38,9 @@ var ErrNotFound = errors.New("not found")
 type Store interface {
 	IngestDocument(ctx context.Context, doc statekit.StateDisplayDocument, observedAt time.Time) error
 	IngestEscalations(ctx context.Context, source string, doc statekit.EscalationDisplayDocument, observedAt time.Time) error
+	UpsertMute(ctx context.Context, mute StateMute) (StateMute, error)
+	DeleteMute(ctx context.Context, identity string) error
+	Mutes(ctx context.Context) ([]StateMute, error)
 
 	// L1: polled constantly, no data payloads.
 	Summary(ctx context.Context) (FleetSummary, error)
@@ -86,14 +89,17 @@ type TargetSummary struct {
 // StateHeader is the light per-state row: enough for the states column,
 // nothing heavy. State lists are flat with parent pointers, not nested trees.
 type StateHeader struct {
-	Identity       string    `json:"identity"`
-	ParentIdentity string    `json:"parent_identity,omitempty"`
-	TargetKey      string    `json:"target_key,omitempty"`
-	Name           string    `json:"name"`
-	Status         string    `json:"status"`
-	Reason         string    `json:"reason,omitempty"`
-	Importance     string    `json:"importance"`
-	ChangedAt      time.Time `json:"changed_at"`
+	Identity       string     `json:"identity"`
+	ParentIdentity string     `json:"parent_identity,omitempty"`
+	TargetKey      string     `json:"target_key,omitempty"`
+	Name           string     `json:"name"`
+	Status         string     `json:"status"`
+	OriginalStatus string     `json:"original_status,omitempty"`
+	Reason         string     `json:"reason,omitempty"`
+	OriginalReason string     `json:"original_reason,omitempty"`
+	Importance     string     `json:"importance"`
+	ChangedAt      time.Time  `json:"changed_at"`
+	Mute           *StateMute `json:"mute,omitempty"`
 }
 
 type AffectedState struct {
@@ -141,6 +147,23 @@ type Transition struct {
 type StateTimeline struct {
 	Identity    string       `json:"identity"`
 	Transitions []Transition `json:"transitions"` // newest first
+}
+
+// StateMute caps one state's effective status until ExpiresAt. Status is the
+// maximum visible status while the mute is active; use "pass" to force-pass.
+// Stored details are never mutated by mutes; the visible view is derived from
+// raw detail + mute on materialization and reads. OriginalStatus reports the
+// state's current raw status wherever a mute is returned.
+type StateMute struct {
+	Identity       string    `json:"identity"`
+	TargetKey      string    `json:"target_key,omitempty"`
+	Name           string    `json:"name,omitempty"`
+	Status         string    `json:"status"`
+	Reason         string    `json:"reason,omitempty"`
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
+	ExpiresAt      time.Time `json:"expires_at"`
+	OriginalStatus string    `json:"original_status,omitempty"`
 }
 
 type Incident struct {
@@ -207,6 +230,7 @@ type MemoryStore struct {
 	transitionTotal int
 	chart           ChartStore
 	journal         *Journal
+	mutes           map[string]StateMute
 	incidents       map[string]Incident
 	incidentEvents  map[string]map[string]IncidentEvent
 	incidentIndex   map[string]map[string]struct{} // source+"\n"+id -> incident identities
@@ -299,6 +323,7 @@ func NewMemoryStore(opts ...MemoryStoreOption) *MemoryStore {
 		details:            map[string]StateDetail{},
 		timelines:          map[string]*transitionRing{},
 		chart:              NewMemoryChartStore(time.Minute, 24*60),
+		mutes:              map[string]StateMute{},
 		incidents:          map[string]Incident{},
 		incidentEvents:     map[string]map[string]IncidentEvent{},
 		incidentIndex:      map[string]map[string]struct{}{},
@@ -345,6 +370,8 @@ func (this *MemoryStore) replayJournal() {
 			transitions[entry.Identity] = append(transitions[entry.Identity], *entry.Transition)
 		case entry.Kind == "incident" && entry.Incident != nil:
 			this.replayIncident(*entry.Incident)
+		case entry.Kind == "mute" && entry.Mute != nil:
+			this.replayMute(*entry.Mute, now)
 		}
 	}
 	for identity, list := range transitions {
@@ -362,6 +389,13 @@ func (this *MemoryStore) replayJournal() {
 	this.sweepClosedIncidents(now)
 	this.journal = journal
 	this.compactJournal()
+}
+
+func (this *MemoryStore) replayMute(mute StateMute, now time.Time) {
+	if mute.Identity == "" || !mute.ExpiresAt.After(now) {
+		return
+	}
+	this.mutes[mute.Identity] = mute
 }
 
 // replayIncident restores one journaled incident upsert; later entries for
@@ -391,6 +425,13 @@ func (this *MemoryStore) compactJournal() {
 		in := incident
 		entries = append(entries, journalEntry{Kind: "incident", Incident: &in})
 	}
+	now := time.Now()
+	for identity, mute := range this.mutes {
+		if mute.ExpiresAt.After(now) {
+			m := mute
+			entries = append(entries, journalEntry{Kind: "mute", Identity: identity, Mute: &m})
+		}
+	}
 	_ = this.journal.rewrite(entries)
 }
 
@@ -408,19 +449,21 @@ func (this *MemoryStore) IngestDocument(ctx context.Context, doc statekit.StateD
 		return err
 	}
 	entries := flattenDocument(doc, observedAt)
-	summaries := buildTargetSummaries(entries)
 	docKey := StateDisplayDocumentKey(doc)
 
 	newIdentities := make(map[string]struct{}, len(entries))
 	for _, entry := range entries {
 		newIdentities[entry.Detail.Identity] = struct{}{}
 	}
+	now := time.Now()
+	this.mu.Lock()
+	this.sweepExpiredMutes(now)
+	visibleEntries := applyMutes(entries, this.mutes, now)
+	summaries := buildTargetSummaries(visibleEntries)
 	newTargets := make(map[string]struct{}, len(summaries))
 	for _, summary := range summaries {
 		newTargets[summary.Key] = struct{}{}
 	}
-
-	this.mu.Lock()
 	for identity := range this.docScopeIdentities[docKey] {
 		if _, kept := newIdentities[identity]; kept {
 			continue
@@ -434,8 +477,11 @@ func (this *MemoryStore) IngestDocument(ctx context.Context, doc statekit.StateD
 		delete(this.targets, key)
 	}
 
-	for _, entry := range entries {
+	for i, entry := range entries {
+		// Stored details stay raw; mutes are derived on read. TargetKey is
+		// stamped by buildTargetSummaries on the visible copy, so carry it over.
 		detail := entry.Detail
+		detail.TargetKey = visibleEntries[i].Detail.TargetKey
 		if existing, ok := this.details[detail.Identity]; ok {
 			detail.FirstSeenAt = existing.FirstSeenAt
 		}
@@ -461,8 +507,137 @@ func (this *MemoryStore) IngestDocument(ctx context.Context, doc statekit.StateD
 	}
 	this.mu.Unlock()
 
-	this.chart.Record(observedAt, triggeringStates(entries))
+	this.chart.Record(observedAt, triggeringStates(visibleEntries))
 	return nil
+}
+
+func (this *MemoryStore) UpsertMute(_ context.Context, mute StateMute) (StateMute, error) {
+	if mute.Identity == "" {
+		return StateMute{}, fmt.Errorf("missing identity")
+	}
+	if _, err := statekit.ParseStatus(mute.Status); err != nil {
+		return StateMute{}, err
+	}
+	now := time.Now()
+	if mute.CreatedAt.IsZero() {
+		mute.CreatedAt = now
+	}
+	mute.UpdatedAt = now
+	if !mute.ExpiresAt.After(now) {
+		return StateMute{}, fmt.Errorf("expires_at must be in the future")
+	}
+
+	this.mu.Lock()
+	defer this.mu.Unlock()
+	if detail, ok := this.details[mute.Identity]; ok {
+		mute.TargetKey = firstNonEmpty(mute.TargetKey, detail.TargetKey)
+		mute.Name = firstNonEmpty(mute.Name, detail.Name)
+		mute.OriginalStatus = detail.Status
+	}
+	this.mutes[mute.Identity] = mute
+	this.rebuildCurrentLayersLocked(now)
+	if this.journal != nil {
+		this.journal.appendMute(mute)
+		if this.journal.needsCompaction() {
+			this.compactJournal()
+		}
+	}
+	return mute, nil
+}
+
+func (this *MemoryStore) DeleteMute(_ context.Context, identity string) error {
+	this.mu.Lock()
+	defer this.mu.Unlock()
+	if _, ok := this.mutes[identity]; !ok {
+		return nil
+	}
+	delete(this.mutes, identity)
+	this.rebuildCurrentLayersLocked(time.Now())
+	if this.journal != nil {
+		this.compactJournal()
+	}
+	return nil
+}
+
+func (this *MemoryStore) Mutes(_ context.Context) ([]StateMute, error) {
+	now := time.Now()
+	this.refreshExpiredMutes(now)
+	this.mu.RLock()
+	defer this.mu.RUnlock()
+	out := make([]StateMute, 0, len(this.mutes))
+	for _, mute := range this.mutes {
+		// OriginalStatus tracks the state's current raw status, not a
+		// snapshot from mute time.
+		if detail, ok := this.details[mute.Identity]; ok {
+			mute.OriginalStatus = detail.Status
+		}
+		out = append(out, mute)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if !out[i].ExpiresAt.Equal(out[j].ExpiresAt) {
+			return out[i].ExpiresAt.Before(out[j].ExpiresAt)
+		}
+		return out[i].Identity < out[j].Identity
+	})
+	return out, nil
+}
+
+func (this *MemoryStore) sweepExpiredMutes(now time.Time) bool {
+	expired := false
+	for identity, mute := range this.mutes {
+		if !mute.ExpiresAt.After(now) {
+			delete(this.mutes, identity)
+			expired = true
+		}
+	}
+	return expired
+}
+
+// refreshExpiredMutes drops expired mutes and rematerializes the L1 layers so
+// the fleet hash moves when a mute lapses. The read-lock pre-check keeps the
+// common polling path (no mutes, or none expired) off the write lock.
+func (this *MemoryStore) refreshExpiredMutes(now time.Time) {
+	this.mu.RLock()
+	expired := false
+	for _, mute := range this.mutes {
+		if !mute.ExpiresAt.After(now) {
+			expired = true
+			break
+		}
+	}
+	this.mu.RUnlock()
+	if !expired {
+		return
+	}
+	this.mu.Lock()
+	defer this.mu.Unlock()
+	if this.sweepExpiredMutes(now) {
+		this.rebuildCurrentLayersLocked(now)
+		if this.journal != nil {
+			this.compactJournal()
+		}
+	}
+}
+
+// rebuildCurrentLayersLocked rematerializes the L1 layers (target summaries
+// and the fleet hash) from raw details plus active mutes. Stored details are
+// never touched; the muted view is derived here and on single-state reads.
+// Callers hold the write lock.
+func (this *MemoryStore) rebuildCurrentLayersLocked(now time.Time) {
+	this.sweepExpiredMutes(now)
+	if len(this.details) == 0 {
+		return
+	}
+	entries := make([]flattenedState, 0, len(this.details))
+	for _, detail := range this.details {
+		entries = append(entries, flattenedState{Detail: detail})
+	}
+	entries = applyMutes(entries, this.mutes, now)
+	this.targets = map[string]TargetSummary{}
+	for _, summary := range buildTargetSummaries(entries) {
+		this.targets[summary.Key] = summary
+	}
+	this.refreshFleetRollup(now)
 }
 
 // dropIdentity removes a state from every current layer and its transition
@@ -702,6 +877,8 @@ func (this *MemoryStore) cacheDocument(ctx context.Context, doc statekit.StateDi
 }
 
 func (this *MemoryStore) Summary(_ context.Context) (FleetSummary, error) {
+	now := time.Now()
+	this.refreshExpiredMutes(now)
 	this.mu.RLock()
 	defer this.mu.RUnlock()
 
@@ -713,9 +890,13 @@ func (this *MemoryStore) Summary(_ context.Context) (FleetSummary, error) {
 		ObservedAt:   this.observedAt,
 	}
 	for _, detail := range this.details {
-		out.StatusCounts[detail.Status]++
-		if statusRank(detail.Status) > statusRank(out.WorstStatus) {
-			out.WorstStatus = detail.Status
+		status := detail.Status
+		if mute, ok := this.mutes[detail.Identity]; ok && mute.ExpiresAt.After(now) {
+			status = capStatus(status, mute.Status)
+		}
+		out.StatusCounts[status]++
+		if statusRank(status) > statusRank(out.WorstStatus) {
+			out.WorstStatus = status
 		}
 	}
 	for _, target := range this.targets {
@@ -726,6 +907,7 @@ func (this *MemoryStore) Summary(_ context.Context) (FleetSummary, error) {
 }
 
 func (this *MemoryStore) Targets(_ context.Context) ([]TargetSummary, error) {
+	this.refreshExpiredMutes(time.Now())
 	this.mu.RLock()
 	defer this.mu.RUnlock()
 
@@ -743,6 +925,8 @@ func (this *MemoryStore) Targets(_ context.Context) ([]TargetSummary, error) {
 }
 
 func (this *MemoryStore) TargetDetail(_ context.Context, key string) (TargetDetail, error) {
+	now := time.Now()
+	this.refreshExpiredMutes(now)
 	this.mu.RLock()
 	defer this.mu.RUnlock()
 
@@ -753,13 +937,15 @@ func (this *MemoryStore) TargetDetail(_ context.Context, key string) (TargetDeta
 	out := TargetDetail{TargetSummary: summary, Details: make([]StateDetail, 0, len(summary.States))}
 	for _, header := range summary.States {
 		if detail, ok := this.details[header.Identity]; ok {
-			out.Details = append(out.Details, detail)
+			out.Details = append(out.Details, this.muteViewLocked(detail, now))
 		}
 	}
 	return out, nil
 }
 
 func (this *MemoryStore) StateDetail(_ context.Context, identity string) (StateDetail, error) {
+	now := time.Now()
+	this.refreshExpiredMutes(now)
 	this.mu.RLock()
 	defer this.mu.RUnlock()
 
@@ -767,6 +953,7 @@ func (this *MemoryStore) StateDetail(_ context.Context, identity string) (StateD
 	if !ok {
 		return StateDetail{}, fmt.Errorf("state %q: %w", identity, ErrNotFound)
 	}
+	detail = this.muteViewLocked(detail, now)
 	for childIdentity, child := range this.details {
 		if child.ParentIdentity == identity {
 			detail.Children = append(detail.Children, childIdentity)
@@ -792,6 +979,61 @@ func (this *MemoryStore) StateTimeline(_ context.Context, identity string) (Stat
 		out.Transitions = append(out.Transitions, ring.entries[i])
 	}
 	return out, nil
+}
+
+// muteView derives the visible view of one raw detail under an active mute.
+// The mute is always attached so a preemptive mute (one that does not change
+// the current status) is still visible and clearable; original_status is set
+// only when the cap actually changed the status.
+func muteView(detail StateDetail, mute StateMute, now time.Time) StateDetail {
+	if !mute.ExpiresAt.After(now) {
+		return detail
+	}
+	mute.OriginalStatus = detail.Status
+	if capped := capStatus(detail.Status, mute.Status); capped != detail.Status {
+		detail.OriginalStatus = detail.Status
+		detail.OriginalReason = detail.Reason
+		detail.Status = capped
+		if mute.Reason != "" {
+			detail.Reason = mute.Reason
+		} else if capped == statekit.Pass.String() {
+			detail.Reason = "muted: forced pass"
+		} else {
+			detail.Reason = "muted: capped at " + capped
+		}
+	}
+	detail.Mute = &mute
+	return detail
+}
+
+// muteViewLocked resolves the visible view of one stored detail. Callers hold
+// at least the read lock.
+func (this *MemoryStore) muteViewLocked(detail StateDetail, now time.Time) StateDetail {
+	if mute, ok := this.mutes[detail.Identity]; ok {
+		return muteView(detail, mute, now)
+	}
+	return detail
+}
+
+func applyMutes(entries []flattenedState, mutes map[string]StateMute, now time.Time) []flattenedState {
+	if len(mutes) == 0 {
+		return entries
+	}
+	out := make([]flattenedState, len(entries))
+	copy(out, entries)
+	for i := range out {
+		if mute, ok := mutes[out[i].Detail.Identity]; ok {
+			out[i].Detail = muteView(out[i].Detail, mute, now)
+		}
+	}
+	return out
+}
+
+func capStatus(current, cap string) string {
+	if statusRank(current) <= statusRank(cap) {
+		return current
+	}
+	return cap
 }
 
 func (this *MemoryStore) Incidents(_ context.Context, filter IncidentFilter) ([]Incident, error) {

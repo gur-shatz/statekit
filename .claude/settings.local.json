@@ -23,7 +23,10 @@
       "Bash(ps -o pid,command -p 11132,22147,28541)",
       "Bash(kill -9 28541 11132 22147)",
       "Bash(ps -ax -o pid,command)",
-      "Bash(kill -9 44293 90553)"
+      "Bash(kill -9 44293 90553)",
+      "Bash(ps -p 10566 -o pid,state,command)",
+      "Bash(unzip -o \"State observability deck improvements.zip\" -d /private/tmp/claude-502/-Users-gur-workspace-projects-statekit/4dddf679-1727-40e4-8bd2-6dee6be9c887/scratchpad/deck)",
+      "Bash(gofmt -l storage/ console)"
     ]
   }
 }

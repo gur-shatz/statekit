@@ -159,6 +159,7 @@ func stateMaterialFields(detail StateDetail) map[string]any {
 		"labels":          detail.Labels,
 		"data_hash":       detail.DataHash,
 		"changed_at":      detail.ChangedAt,
+		"mute":            detail.Mute,
 	}
 }
 

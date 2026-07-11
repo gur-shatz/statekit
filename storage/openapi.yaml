@@ -226,6 +226,56 @@ paths:
       responses:
         '204':
           description: Stored
+  /state/mutes:
+    get:
+      summary: List active state mutes
+      responses:
+        '200':
+          description: Active mutes
+          headers:
+            ETag:
+              $ref: '#/components/headers/ETag'
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/StateMute'
+        '304':
+          $ref: '#/components/responses/NotModified'
+    post:
+      summary: Create or update a state mute
+      description: >
+        Caps one state's effective status until expiration. Use status pass to
+        force-pass the state. Either duration (Go duration such as 30m, plus a
+        day suffix such as 7d) or expires_at must be provided.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MuteRequest'
+      responses:
+        '200':
+          description: Stored mute
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StateMute'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+  /state/mutes/{identity}:
+    delete:
+      summary: Clear a state mute
+      parameters:
+        - name: identity
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '204':
+          description: Cleared
   /escalations/doc:
     post:
       summary: Ingest an escalation display document
@@ -485,7 +535,12 @@ components:
         status:
           type: string
           enum: [pass, warn, fail, down]
+        original_status:
+          type: string
+          enum: [pass, warn, fail, down]
         reason:
+          type: string
+        original_reason:
           type: string
         importance:
           type: string
@@ -493,6 +548,8 @@ components:
         changed_at:
           type: string
           format: date-time
+        mute:
+          $ref: '#/components/schemas/StateMute'
     AffectedState:
       type: object
       properties:
@@ -583,6 +640,50 @@ components:
           enum: [pass, warn, fail, down]
         reason:
           type: string
+    MuteRequest:
+      type: object
+      required: [identity, status]
+      properties:
+        identity:
+          type: string
+        status:
+          type: string
+          enum: [pass, warn, fail, down]
+        reason:
+          type: string
+        duration:
+          type: string
+          description: Go duration such as 30m or 24h, or a day count such as 7d, 30d, or 365d.
+        expires_at:
+          type: string
+          format: date-time
+    StateMute:
+      type: object
+      required: [identity, status, created_at, updated_at, expires_at]
+      properties:
+        identity:
+          type: string
+        target_key:
+          type: string
+        name:
+          type: string
+        status:
+          type: string
+          enum: [pass, warn, fail, down]
+        reason:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        expires_at:
+          type: string
+          format: date-time
+        original_status:
+          type: string
+          enum: [pass, warn, fail, down]
     BucketCounts:
       type: object
       required: [t, counts]

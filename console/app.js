@@ -433,6 +433,7 @@ function renderDetail() {
 
   const parts = [];
   parts.push(`<div class="detailTitle">${pill(node.status)}<h2>${esc(node.name)}</h2>${info ? `<span class="infoBadge">INFORMATIONAL</span>` : ""}</div>`);
+  parts.push(muteControlsHTML(node));
   parts.push(`<div class="detailMeta">
     <span>updated <b>${esc(formatAge(secondsSince(node.updated_at || node.observed_at)))} ago</b></span>
     <span>changed <b>${esc(formatAge(secondsSince(node.changed_at)))} ago</b></span>
@@ -478,6 +479,29 @@ function renderDetail() {
   }
 
   bodyEl.innerHTML = parts.join("");
+}
+
+function muteControlsHTML(node) {
+  const active = node.mute;
+  const original = node.original_status ? `<span class="metaMono">from ${esc(node.original_status.toUpperCase())}</span>` : "";
+  const expires = active?.expires_at ? `<span class="metaMono">until ${esc(formatTime(active.expires_at))}</span>` : "";
+  return `<div class="muteBar" data-mute-identity="${esc(node.identity)}">
+    <div class="muteStatus">${active ? `MUTED ${original} ${expires}` : "MUTE"}</div>
+    <select class="select sm muteStatusSelect" aria-label="Muted status">
+      ${statusOrder.map((s) => `<option value="${s}" ${s === "pass" ? "selected" : ""}>${s.toUpperCase()}</option>`).join("")}
+    </select>
+    <select class="select sm muteDurationSelect" aria-label="Mute duration">
+      <option value="30m">30m</option>
+      <option value="1h" selected>1h</option>
+      <option value="4h">4h</option>
+      <option value="24h">24h</option>
+      <option value="7d">7d</option>
+      <option value="30d">30d</option>
+      <option value="365d">365d</option>
+    </select>
+    <button type="button" class="muteApply">Apply</button>
+    ${active ? `<button type="button" class="muteClear">Clear</button>` : ""}
+  </div>`;
 }
 
 function childRowHTML(c) {
@@ -708,6 +732,30 @@ async function acknowledgeIncident(source, id) {
   await refresh();
 }
 
+async function muteState(identity, status, duration) {
+  const body = {
+    identity,
+    status,
+    duration,
+    reason: status === "pass" ? "muted: forced pass" : `muted: capped at ${status}`,
+  };
+  const res = await fetch(`${apiBase}/state/mutes`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Accept: "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  etagCache.clear();
+  await refresh();
+}
+
+async function clearMute(identity) {
+  const res = await fetch(`${apiBase}/state/mutes/${encodeURIComponent(identity)}`, { method: "DELETE" });
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  etagCache.clear();
+  await refresh();
+}
+
 // ---------- time helpers ----------
 
 function pad(n) { return String(n).padStart(2, "0"); }
@@ -775,6 +823,22 @@ $("detailCrumbs").addEventListener("click", (e) => {
   if (id) selectIdentity(id.dataset.identity);
 });
 $("detail").addEventListener("click", (e) => {
+  const apply = e.target.closest(".muteApply");
+  if (apply) {
+    const bar = apply.closest("[data-mute-identity]");
+    muteState(
+      bar.dataset.muteIdentity,
+      bar.querySelector(".muteStatusSelect").value,
+      bar.querySelector(".muteDurationSelect").value,
+    ).then(clearError).catch(showError);
+    return;
+  }
+  const clear = e.target.closest(".muteClear");
+  if (clear) {
+    const bar = clear.closest("[data-mute-identity]");
+    clearMute(bar.dataset.muteIdentity).then(clearError).catch(showError);
+    return;
+  }
   const child = e.target.closest("[data-identity]");
   if (child) selectIdentity(child.dataset.identity);
 });

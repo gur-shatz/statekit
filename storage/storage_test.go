@@ -406,6 +406,182 @@ func TestMemoryStoreSummaryAndFleetHash(t *testing.T) {
 	}
 }
 
+func TestMemoryStoreMutesStateStatusWithExpiry(t *testing.T) {
+	store := NewMemoryStore()
+	ctx := context.Background()
+	t0 := time.Date(2026, 5, 16, 12, 0, 0, 0, time.UTC)
+	doc := testDocument()
+	doc.States[0].Status = statekit.Fail
+	doc.States[0].Reason = "database down"
+	if err := store.IngestDocument(ctx, doc, t0); err != nil {
+		t.Fatal(err)
+	}
+	identity := identityByName(t, store, "checkout-api")
+	mute, err := store.UpsertMute(ctx, StateMute{
+		Identity:  identity,
+		Status:    statekit.Pass.String(),
+		Reason:    "maintenance window",
+		ExpiresAt: time.Now().Add(30 * time.Millisecond),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mute.Name != "checkout-api" || mute.OriginalStatus != "fail" {
+		t.Fatalf("mute metadata = %+v", mute)
+	}
+
+	summary, err := store.Summary(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.WorstStatus != "pass" || summary.StatusCounts["pass"] != 2 {
+		t.Fatalf("muted summary = %+v", summary)
+	}
+	detail, err := store.StateDetail(ctx, identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if detail.Status != "pass" || detail.OriginalStatus != "fail" || detail.Mute == nil || detail.Reason != "maintenance window" {
+		t.Fatalf("muted detail = %+v", detail)
+	}
+
+	time.Sleep(40 * time.Millisecond)
+	expired, err := store.StateDetail(ctx, identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if expired.Status != "fail" || expired.Mute != nil || expired.OriginalStatus != "" {
+		t.Fatalf("expired mute detail = %+v", expired)
+	}
+}
+
+func TestMemoryStoreClearsMuteImmediately(t *testing.T) {
+	store := NewMemoryStore()
+	ctx := context.Background()
+	t0 := time.Date(2026, 5, 16, 12, 0, 0, 0, time.UTC)
+	doc := testDocument()
+	doc.States[0].Status = statekit.Fail
+	if err := store.IngestDocument(ctx, doc, t0); err != nil {
+		t.Fatal(err)
+	}
+	identity := identityByName(t, store, "checkout-api")
+	if _, err := store.UpsertMute(ctx, StateMute{
+		Identity:  identity,
+		Status:    statekit.Warn.String(),
+		ExpiresAt: time.Now().Add(time.Hour),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.DeleteMute(ctx, identity); err != nil {
+		t.Fatal(err)
+	}
+	detail, err := store.StateDetail(ctx, identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if detail.Status != "fail" || detail.Mute != nil {
+		t.Fatalf("cleared detail = %+v", detail)
+	}
+}
+
+func TestMemoryStoreReplaysMutesFromJournal(t *testing.T) {
+	ctx := context.Background()
+	t0 := time.Date(2026, 5, 16, 12, 0, 0, 0, time.UTC)
+	path := t.TempDir() + "/journal.ndjson"
+	journal, err := OpenJournal(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := NewMemoryStore(WithJournal(journal))
+	doc := testDocument()
+	doc.States[0].Status = statekit.Fail
+	if err := store.IngestDocument(ctx, doc, t0); err != nil {
+		t.Fatal(err)
+	}
+	identity := identityByName(t, store, "checkout-api")
+	if _, err := store.UpsertMute(ctx, StateMute{
+		Identity:  identity,
+		Status:    statekit.Pass.String(),
+		ExpiresAt: time.Now().Add(time.Hour),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, err := OpenJournal(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	replayed := NewMemoryStore(WithJournal(reopened))
+	if err := replayed.IngestDocument(ctx, doc, t0.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	detail, err := replayed.StateDetail(ctx, identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if detail.Status != "pass" || detail.Mute == nil {
+		t.Fatalf("replayed mute detail = %+v", detail)
+	}
+}
+
+func TestMemoryStorePreemptiveMuteStaysVisible(t *testing.T) {
+	store := NewMemoryStore()
+	ctx := context.Background()
+	t0 := time.Date(2026, 5, 16, 12, 0, 0, 0, time.UTC)
+	doc := testDocument()
+	doc.States[0].Status = statekit.Pass
+	doc.States[0].Reason = ""
+	if err := store.IngestDocument(ctx, doc, t0); err != nil {
+		t.Fatal(err)
+	}
+	identity := identityByName(t, store, "checkout-api")
+	if _, err := store.UpsertMute(ctx, StateMute{
+		Identity:  identity,
+		Status:    statekit.Warn.String(),
+		ExpiresAt: time.Now().Add(time.Hour),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	detail, err := store.StateDetail(ctx, identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if detail.Status != "pass" || detail.OriginalStatus != "" || detail.Mute == nil {
+		t.Fatalf("preemptive mute detail = %+v", detail)
+	}
+	if detail.Mute.OriginalStatus != "pass" {
+		t.Fatalf("preemptive mute original status = %q", detail.Mute.OriginalStatus)
+	}
+}
+
+func TestParseMuteDuration(t *testing.T) {
+	cases := []struct {
+		raw  string
+		want time.Duration
+		ok   bool
+	}{
+		{"30m", 30 * time.Minute, true},
+		{"24h", 24 * time.Hour, true},
+		{"7d", 7 * 24 * time.Hour, true},
+		{"30d", 30 * 24 * time.Hour, true},
+		{"365d", 365 * 24 * time.Hour, true},
+		{"1.5d", 0, false},
+		{"d", 0, false},
+		{"bogus", 0, false},
+	}
+	for _, tc := range cases {
+		got, err := parseMuteDuration(tc.raw)
+		if tc.ok != (err == nil) || got != tc.want {
+			t.Fatalf("parseMuteDuration(%q) = %v, %v", tc.raw, got, err)
+		}
+	}
+}
+
 func TestMemoryStoreStateDetailAndChildren(t *testing.T) {
 	store := NewMemoryStore()
 	ctx := context.Background()
