@@ -165,6 +165,46 @@ func TestHTTPMetricsPrometheusExportsGlobalMeasurements(t *testing.T) {
 	}
 }
 
+func TestHTTPMetricsPrometheusExportsRollingAverageLatencyByPath(t *testing.T) {
+	now := time.Date(2026, 5, 17, 12, 0, 0, 0, time.UTC)
+	metrics := NewHTTPMetrics(
+		WithHTTPMetricsWindow(time.Minute),
+		WithHTTPMetricsSnapshotRefresh(0),
+		withHTTPMetricsClock(func() time.Time { return now }),
+	)
+	reg := statekit.NewRegistry()
+	if err := reg.RegisterCollectors(metrics); err != nil {
+		t.Fatal(err)
+	}
+
+	// Record a full previous bucket for each path.
+	for range 10 {
+		metrics.observe("/fast", http.StatusNoContent, 10*time.Millisecond)
+		metrics.observe("/slow", http.StatusNoContent, 100*time.Millisecond)
+	}
+
+	// At 30 seconds into the next minute, the prior bucket has 50% weight.
+	now = now.Add(90 * time.Second)
+	for range 5 {
+		metrics.observe("/fast", http.StatusNoContent, 20*time.Millisecond)
+		metrics.observe("/slow", http.StatusNoContent, 200*time.Millisecond)
+	}
+
+	var out bytes.Buffer
+	if err := reg.Prometheus(&out); err != nil {
+		t.Fatal(err)
+	}
+	text := out.String()
+	for _, want := range []string{
+		`http_server_average_latency_seconds{path="/fast"} 0.015`,
+		`http_server_average_latency_seconds{path="/slow"} 0.15`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("prometheus output missing %q:\n%s", want, text)
+		}
+	}
+}
+
 func TestHTTPChecksAggregateOverMetrics(t *testing.T) {
 	metrics := NewHTTPMetrics()
 	httpState := statekit.NewStateAggregator("http")
