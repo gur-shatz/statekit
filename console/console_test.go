@@ -30,6 +30,12 @@ func TestHandlerRendersIndexWithInjectedAPIBase(t *testing.T) {
 	if !strings.Contains(body, "issuer") {
 		t.Fatal("title not rendered into index")
 	}
+	if !strings.Contains(body, `id="metricsDrawer"`) {
+		t.Fatal("metrics drawer not rendered")
+	}
+	if !strings.Contains(body, "vendor/uplot/uPlot.min.css") || !strings.Contains(body, "vendor/uplot/uPlot.iife.min.js") {
+		t.Fatal("uPlot assets not loaded by index")
+	}
 	if ct := response.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/html") {
 		t.Fatalf("content-type = %q", ct)
 	}
@@ -57,6 +63,9 @@ func TestHandlerServesAssets(t *testing.T) {
 	}{
 		{"/app.css", "text/css", ".fleet"},
 		{"/app.js", "text/javascript", "STATEKIT_API_BASE"},
+		{"/vendor/uplot/uPlot.min.css", "text/css", ".uplot"},
+		{"/vendor/uplot/uPlot.iife.min.js", "text/javascript", "var uPlot="},
+		{"/vendor/uplot/LICENSE", "text/plain", "MIT License"},
 	} {
 		response := get(t, handler, tc.path)
 		if response.Code != http.StatusOK {
@@ -67,6 +76,23 @@ func TestHandlerServesAssets(t *testing.T) {
 		}
 		if !strings.Contains(response.Body.String(), tc.needle) {
 			t.Fatalf("%s body missing %q", tc.path, tc.needle)
+		}
+	}
+}
+
+func TestHandlerServesTargetMetricsDrawerInteraction(t *testing.T) {
+	handler := Handler(Options{})
+	js := get(t, handler, "/app.js").Body.String()
+	css := get(t, handler, "/app.css").Body.String()
+
+	for _, want := range []string{"data-metrics-target", "openMetricsDrawer", "/metrics/status", "/metrics/timeseries", "metricsEnabled", "new uPlot", "chartTimeLabel"} {
+		if !strings.Contains(js, want) {
+			t.Fatalf("app.js missing %q", want)
+		}
+	}
+	for _, want := range []string{".metricsDrawerPanel", "grid-template-rows: repeat(2"} {
+		if !strings.Contains(css, want) {
+			t.Fatalf("app.css missing %q", want)
 		}
 	}
 }

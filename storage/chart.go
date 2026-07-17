@@ -23,6 +23,16 @@ type ChartStore interface {
 	Bucket(scope string, t time.Time) ([]TriggeringState, error)
 }
 
+type ChartStoreStats struct {
+	Buckets        int64
+	Entries        int64
+	EstimatedBytes uint64
+}
+
+type ChartStatsProvider interface {
+	ChartStats() ChartStoreStats
+}
+
 // TriggeringState is one charting store entry. Label is the display name
 // ("target:check"), captured at write time so reads need no join against the
 // current layers: a state that was triggering an hour ago may no longer exist
@@ -175,6 +185,22 @@ func (this *MemoryChartStore) Bucket(scope string, t time.Time) ([]TriggeringSta
 		return out[i].Identity < out[j].Identity
 	})
 	return out, nil
+}
+
+func (this *MemoryChartStore) ChartStats() ChartStoreStats {
+	this.mu.RLock()
+	defer this.mu.RUnlock()
+	stats := ChartStoreStats{
+		Buckets:        int64(len(this.buckets)),
+		EstimatedBytes: uint64(cap(this.buckets)) * 32,
+	}
+	for i := range this.buckets {
+		for identity, state := range this.buckets[i].states {
+			stats.Entries++
+			stats.EstimatedBytes += 96 + uint64(len(identity)+len(state.Identity)+len(state.TargetKey)+len(state.Label)+len(state.Status))
+		}
+	}
+	return stats
 }
 
 func (this *MemoryChartStore) slotIndex(t time.Time) int {

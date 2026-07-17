@@ -16,6 +16,8 @@ A `*Scraper` exposes two things:
   The scraper does not wrap them in its own aggregate.
 - `Scraper.MetricsCollector() statekit.PrometheusCollector` — a
   collector for samples scraped from target `/metrics` endpoints.
+- `scraper.WithMetricsIngestor(...)` — optionally sends successful
+  observations to a bounded timeseries aggregator, grouped by `scrape_path`.
 
 Wire-up looks like:
 
@@ -32,6 +34,14 @@ reg.RegisterCollectors(sc.MetricsCollector())
 go sc.Run(ctx)
 
 reg.Mount(http.DefaultServeMux, "/")
+```
+
+To retain metrics for the storage console's target drill-down:
+
+```go
+metrics := storage.NewMemoryMetricsStore(30*time.Minute, 100)
+store := storage.NewMemoryStore(storage.WithMetricsStore(metrics))
+sc, _ := scraper.New(*cfg, scraper.WithMetricsIngestor(metrics))
 ```
 
 ## Target shape

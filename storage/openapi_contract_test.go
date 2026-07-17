@@ -34,7 +34,7 @@ func TestOpenAPIContract(t *testing.T) {
 		t.Fatalf("spec invalid: %v", err)
 	}
 
-	store := NewMemoryStore()
+	store := NewMemoryStore(WithMetricsStore(NewMemoryMetricsStore(0, 0)))
 	api := NewAPI(store)
 
 	served := map[string]bool{}
@@ -78,6 +78,7 @@ func TestOpenAPIContract(t *testing.T) {
 	}
 	queries := map[string]string{
 		"/state/timeline/bucket": "t=" + url.QueryEscape(now.Format(time.RFC3339Nano)),
+		"/metrics/timeseries":    "key=" + url.QueryEscape("contract"),
 		"/escalations/doc":       "source=contract",
 		"/escalations/ack":       "source=issuer-east&id=ID-0000000001",
 	}
@@ -201,4 +202,7 @@ func seedContractStore(t *testing.T, store *MemoryStore, now time.Time) {
 	}, now); err != nil {
 		t.Fatal(err)
 	}
+	store.MetricsStore().IngestMetrics("contract", nil, []statekit.PrometheusSample{{
+		Name: "contract_depth", Labels: map[string]string{"queue": "default"}, Value: 3,
+	}}, now)
 }

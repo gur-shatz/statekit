@@ -229,6 +229,8 @@ type MemoryStore struct {
 	timelines       map[string]*transitionRing
 	transitionTotal int
 	chart           ChartStore
+	metrics         MetricsStore
+	observability   *StoreObservability
 	journal         *Journal
 	mutes           map[string]StateMute
 	incidents       map[string]Incident
@@ -298,6 +300,15 @@ func WithChartStore(chart ChartStore) MemoryStoreOption {
 	}
 }
 
+// WithMetricsStore replaces the bounded metrics timeseries backend.
+func WithMetricsStore(metrics MetricsStore) MemoryStoreOption {
+	return func(s *MemoryStore) {
+		if metrics != nil {
+			s.metrics = metrics
+		}
+	}
+}
+
 // WithJournal persists L3 history (transitions and incidents) to the given
 // journal. NewMemoryStore replays it before serving, so history survives
 // restarts; every ring cap, dedup rule, and incident TTL still applies.
@@ -340,6 +351,7 @@ func NewMemoryStore(opts ...MemoryStoreOption) *MemoryStore {
 	for _, opt := range opts {
 		opt(store)
 	}
+	store.observability = newStoreObservability(store)
 	if store.journal != nil {
 		store.replayJournal()
 	}
@@ -439,6 +451,12 @@ func (this *MemoryStore) compactJournal() {
 // state API.
 func (this *MemoryStore) Chart() ChartStore {
 	return this.chart
+}
+
+// MetricsStore exposes the metrics aggregator for scraper ingestion and API
+// queries.
+func (this *MemoryStore) MetricsStore() MetricsStore {
+	return this.metrics
 }
 
 func (this *MemoryStore) IngestDocument(ctx context.Context, doc statekit.StateDisplayDocument, observedAt time.Time) error {

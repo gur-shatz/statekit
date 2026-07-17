@@ -7,6 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="vendor/uplot/uPlot.min.css">
   <link rel="stylesheet" href="app.css">
 </head>
 <body>
@@ -94,9 +95,24 @@
     </section>
   </div>
 
+  <div class="metricsDrawer" id="metricsDrawer" aria-hidden="true">
+    <div class="metricsDrawerBackdrop" id="metricsDrawerBackdrop"></div>
+    <aside class="metricsDrawerPanel" role="dialog" aria-modal="true" aria-labelledby="metricsDrawerTitle">
+      <div class="metricsDrawerHeader">
+        <div>
+          <h2 id="metricsDrawerTitle">Metrics</h2>
+          <div class="metaMono" id="metricsDrawerSub"></div>
+        </div>
+        <button class="btn" id="metricsDrawerClose" type="button">Close</button>
+      </div>
+      <div class="metricsDrawerBody" id="metricsDrawerBody"></div>
+    </aside>
+  </div>
+
   <script>
     window.STATEKIT_API_BASE = "{{ .APIBase }}";
   </script>
+  <script src="vendor/uplot/uPlot.iife.min.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

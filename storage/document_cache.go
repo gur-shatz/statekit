@@ -15,12 +15,29 @@ type DocumentCache[T any] interface {
 	GetYAML(ctx context.Context, key string) ([]byte, bool, error)
 }
 
+type DocumentCacheStats struct {
+	Entries       int64
+	CapacityBytes uint64
+}
+
+type DocumentCacheStatsProvider interface {
+	DocumentCacheStats() DocumentCacheStats
+}
+
 type FreecacheDocumentCache[T any] struct {
-	cache *freecache.Cache
+	cache         *freecache.Cache
+	capacityBytes int
 }
 
 func NewFreecacheDocumentCache[T any](sizeBytes int) *FreecacheDocumentCache[T] {
-	return &FreecacheDocumentCache[T]{cache: freecache.NewCache(sizeBytes)}
+	return &FreecacheDocumentCache[T]{cache: freecache.NewCache(sizeBytes), capacityBytes: sizeBytes}
+}
+
+func (c *FreecacheDocumentCache[T]) DocumentCacheStats() DocumentCacheStats {
+	return DocumentCacheStats{
+		Entries:       c.cache.EntryCount(),
+		CapacityBytes: uint64(c.capacityBytes),
+	}
 }
 
 func (c *FreecacheDocumentCache[T]) Set(_ context.Context, key string, value T, ttl time.Duration) error {

@@ -305,10 +305,14 @@ func main() {
 	store := storage.NewMemoryStore(storage.WithDocumentCache(
 		storage.NewFreecacheDocumentCache[statekit.StateDisplayDocument](32<<20),
 		5*time.Minute,
-	))
+	), storage.WithMetricsStore(storage.NewMemoryMetricsStore(30*time.Minute, 100)))
 	east := newMountedScraper("regional-east", filepath.Join(*configDir, "scraper-east.yaml"), "regional", scraper.WithEscalationIngestor(store))
 	west := newMountedScraper("regional-west", filepath.Join(*configDir, "scraper-west.yaml"), "regional", scraper.WithEscalationIngestor(store))
-	fleet := newMountedScraper("fleet-aggregator", filepath.Join(*configDir, "fleet-aggregator.yaml"), "fleet")
+	fleet := newMountedScraper("fleet-aggregator", filepath.Join(*configDir, "fleet-aggregator.yaml"), "fleet",
+		scraper.WithMetricsIngestor(store.MetricsStore()))
+	if err := fleet.reg.Register(store.Observability()); err != nil {
+		log.Fatalf("register storage observability: %v", err)
+	}
 	east.mount(mux, "/scraper/east")
 	west.mount(mux, "/scraper/west")
 	fleet.mount(mux, "/fleet")

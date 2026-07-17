@@ -6,6 +6,9 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/gur-shatz/statekit"
 )
 
 func TestMetricsScrapeAddsScrapedFromLabel(t *testing.T) {
@@ -61,6 +64,40 @@ upstream_metric{scraped_from="origin-service",kind="remote"} 2
 	}
 	if upstream["target_id"] != "regional-east" || upstream["kind"] != "remote" {
 		t.Fatalf("upstream labels = %+v", upstream)
+	}
+}
+
+type recordingMetricsIngestor struct {
+	byKey map[string][]statekit.PrometheusSample
+}
+
+func (r *recordingMetricsIngestor) IngestMetrics(key string, _ []statekit.PrometheusDesc, samples []statekit.PrometheusSample, _ time.Time) {
+	if r.byKey == nil {
+		r.byKey = map[string][]statekit.PrometheusSample{}
+	}
+	r.byKey[key] = append(r.byKey[key], samples...)
+}
+
+func TestMetricsScrapeFeedsTimeseriesByScrapePath(t *testing.T) {
+	target := TargetConfig{
+		ID: "fleet", Name: "fleet", BaseURL: "http://fleet.example",
+		Metrics: &MetricsTask{Paths: []string{"/metrics"}},
+	}
+	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: 200,
+			Body:       io.NopCloser(strings.NewReader("local 1\nremote{scrape_path=\"region > api\",scraped_from=\"api\"} 2\n")),
+		}, nil
+	})}
+	ingestor := &recordingMetricsIngestor{}
+	runner := buildMetrics(target, Config{}, client, newScrapedMetricsCollector(), ingestor)
+	runner.tick(context.Background())
+
+	if len(ingestor.byKey["fleet"]) != 1 || ingestor.byKey["fleet"][0].Name != "local" {
+		t.Fatalf("fleet samples = %+v", ingestor.byKey["fleet"])
+	}
+	if len(ingestor.byKey["fleet > region > api"]) != 1 || ingestor.byKey["fleet > region > api"][0].Name != "remote" {
+		t.Fatalf("remote samples = %+v", ingestor.byKey["fleet > region > api"])
 	}
 }
 

@@ -28,10 +28,11 @@ type Scraper struct {
 	cfg    Config
 	client *http.Client
 
-	states    []statekit.State
-	metrics   *scrapedMetricsCollector
-	incidents EscalationIngestor
-	tasks     []*taskRunner
+	states          []statekit.State
+	metrics         *scrapedMetricsCollector
+	metricsIngestor MetricsIngestor
+	incidents       EscalationIngestor
+	tasks           []*taskRunner
 }
 
 type Option func(*Scraper)
@@ -39,6 +40,18 @@ type Option func(*Scraper)
 func WithEscalationIngestor(ingestor EscalationIngestor) Option {
 	return func(s *Scraper) {
 		s.incidents = ingestor
+	}
+}
+
+// MetricsIngestor receives bounded-timeseries observations keyed by
+// scrape_path. storage.MemoryStore's MetricsStore implements this interface.
+type MetricsIngestor interface {
+	IngestMetrics(key string, descs []statekit.PrometheusDesc, samples []statekit.PrometheusSample, observedAt time.Time)
+}
+
+func WithMetricsIngestor(ingestor MetricsIngestor) Option {
+	return func(s *Scraper) {
+		s.metricsIngestor = ingestor
 	}
 }
 
@@ -70,7 +83,7 @@ func New(cfg Config, opts ...Option) (*Scraper, error) {
 			s.tasks = append(s.tasks, runner)
 		}
 		if target.Metrics != nil {
-			runner := buildMetrics(target, cfg, s.client, s.metrics)
+			runner := buildMetrics(target, cfg, s.client, s.metrics, s.metricsIngestor)
 			s.tasks = append(s.tasks, runner)
 		}
 		if target.Escalations != nil {

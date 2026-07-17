@@ -23,8 +23,9 @@ const (
 )
 
 type API struct {
-	store Store
-	chart ChartStore
+	store   Store
+	chart   ChartStore
+	metrics MetricsStore
 }
 
 type APIOption func(*API)
@@ -38,9 +39,20 @@ func WithChart(chart ChartStore) APIOption {
 	}
 }
 
+// WithMetrics mounts the metrics endpoint on a specific metrics store.
+func WithMetrics(metrics MetricsStore) APIOption {
+	return func(a *API) {
+		a.metrics = metrics
+	}
+}
+
 // ChartProvider is implemented by stores that own a charting store.
 type ChartProvider interface {
 	Chart() ChartStore
+}
+
+type MetricsProvider interface {
+	MetricsStore() MetricsStore
 }
 
 func NewAPI(store Store, opts ...APIOption) *API {
@@ -51,6 +63,11 @@ func NewAPI(store Store, opts ...APIOption) *API {
 	if api.chart == nil {
 		if provider, ok := store.(ChartProvider); ok {
 			api.chart = provider.Chart()
+		}
+	}
+	if api.metrics == nil {
+		if provider, ok := store.(MetricsProvider); ok {
+			api.metrics = provider.MetricsStore()
 		}
 	}
 	return api
@@ -74,6 +91,8 @@ func (a *API) routes() []route {
 		{"GET", "/state/states/{identity}/timeline", a.handleStateTimeline},
 		{"GET", "/state/timeline", a.handleChartTimeline},
 		{"GET", "/state/timeline/bucket", a.handleChartBucket},
+		{"GET", "/metrics/status", a.handleMetricsStatus},
+		{"GET", "/metrics/timeseries", a.handleMetricsTimeseries},
 		{"POST", "/state/doc", a.handleIngestDocument},
 		{"GET", "/state/mutes", a.handleMutes},
 		{"POST", "/state/mutes", a.handleUpsertMute},
@@ -84,6 +103,43 @@ func (a *API) routes() []route {
 		{"POST", "/escalations/ack", a.handleAcknowledgeIncident},
 		{"POST", "/escalations/global", a.handleGlobalIncident},
 	}
+}
+
+type MetricsStatus struct {
+	Enabled bool `json:"enabled"`
+}
+
+func (a *API) handleMetricsStatus(w http.ResponseWriter, r *http.Request) {
+	out := MetricsStatus{Enabled: a.metrics != nil}
+	writeJSONETag(w, r, hashJSON(out), out)
+}
+
+func (a *API) handleMetricsTimeseries(w http.ResponseWriter, r *http.Request) {
+	if a.metrics == nil {
+		http.Error(w, "metrics store not configured", http.StatusNotFound)
+		return
+	}
+	key := r.URL.Query().Get("key")
+	if key == "" {
+		http.Error(w, "missing metrics key", http.StatusBadRequest)
+		return
+	}
+	window := defaultMetricsRetention
+	if value := r.URL.Query().Get("window"); value != "" {
+		parsed, err := time.ParseDuration(value)
+		if err != nil || parsed <= 0 {
+			http.Error(w, fmt.Sprintf("invalid window %q", value), http.StatusBadRequest)
+			return
+		}
+		window = parsed
+	}
+	to := time.Now()
+	out, err := a.metrics.Metrics(key, to.Add(-window), to)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	writeJSONETag(w, r, hashJSON(out), out)
 }
 
 func (a *API) Handler() http.Handler {

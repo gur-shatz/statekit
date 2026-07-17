@@ -206,6 +206,55 @@ paths:
           $ref: '#/components/responses/NotModified'
         '400':
           $ref: '#/components/responses/BadRequest'
+  /metrics/status:
+    get:
+      summary: Metrics aggregation status
+      description: Reports whether a metrics timeseries store is configured.
+      responses:
+        '200':
+          description: Metrics aggregation status
+          headers:
+            ETag:
+              $ref: '#/components/headers/ETag'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MetricsStatus'
+        '304':
+          $ref: '#/components/responses/NotModified'
+  /metrics/timeseries:
+    get:
+      summary: Metrics timeseries for one keyed item
+      description: >
+        Returns the retained Prometheus samples whose scrape_path equals key,
+        grouped by metric and then by label set. Timestamps are Unix seconds
+        in a separate array parallel to values.
+      parameters:
+        - name: key
+          in: query
+          required: true
+          description: A target scrape_path.
+          schema:
+            type: string
+        - name: window
+          in: query
+          description: Go duration. Defaults to the store retention (30m).
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Grouped metrics timeseries
+          headers:
+            ETag:
+              $ref: '#/components/headers/ETag'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MetricsDocument'
+        '304':
+          $ref: '#/components/responses/NotModified'
+        '400':
+          $ref: '#/components/responses/BadRequest'
   /state/doc:
     post:
       summary: Ingest a statekit display document
@@ -710,6 +759,61 @@ components:
         status:
           type: string
           enum: [warn, fail, down]
+    MetricsStatus:
+      type: object
+      required: [enabled]
+      properties:
+        enabled:
+          type: boolean
+    MetricsDocument:
+      type: object
+      required: [key, from, to, metrics]
+      properties:
+        key:
+          type: string
+        from:
+          type: integer
+          format: int64
+        to:
+          type: integer
+          format: int64
+        metrics:
+          type: array
+          items:
+            $ref: '#/components/schemas/MetricSeries'
+    MetricSeries:
+      type: object
+      required: [name, series]
+      properties:
+        name:
+          type: string
+        help:
+          type: string
+        type:
+          type: string
+          enum: [gauge, counter, histogram, summary]
+        series:
+          type: array
+          items:
+            $ref: '#/components/schemas/MeasurementSeries'
+    MeasurementSeries:
+      type: object
+      required: [timestamps, values]
+      properties:
+        labels:
+          type: object
+          additionalProperties:
+            type: string
+        timestamps:
+          type: array
+          items:
+            type: integer
+            format: int64
+        values:
+          type: array
+          items:
+            type: number
+            format: double
     StateDisplayDocument:
       type: object
       required: [kind, label_path, states]

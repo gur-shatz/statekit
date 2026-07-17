@@ -223,6 +223,8 @@ header.appbar {
 .trow .head { display: flex; align-items: center; gap: 11px; min-width: 0; }
 .trow .name { font: 600 14px var(--sans); color: var(--text); }
 .trow .host { font: 400 10px var(--mono); color: var(--muted-3); }
+.targetMetricsBtn { margin-left: auto; flex: none; padding: 5px 9px; border: 1px solid #344258; border-radius: 6px; background: #172131; color: #9cc4ff; font: 600 9px var(--mono); text-transform: uppercase; letter-spacing: .05em; }
+.targetMetricsBtn:hover { border-color: #58759c; background: #1d2a3d; color: #d6e8ff; }
 .chips { display: flex; flex-wrap: wrap; gap: 6px; }
 .countChip { font: 600 10px/1 var(--mono); letter-spacing: .04em; border-radius: 6px; padding: 3px 8px; white-space: nowrap; }
 .countChip.pass { color: var(--green-text); background: rgba(63, 185, 80, .12); }
@@ -286,6 +288,30 @@ header.appbar {
 .dataYaml .yDash { color: #8b949e; }
 .detailLabels { display: flex; flex-wrap: wrap; gap: 6px; }
 .labelChip { font: 400 11px var(--mono); color: #9aa7b8; background: var(--panel-3); border: 1px solid var(--border-2); border-radius: 999px; padding: 3px 9px; }
+
+.metricChart { padding: 12px; border: 1px solid var(--border-2); border-radius: 9px; background: #0a0e15; display: flex; flex-direction: column; min-height: 0; }
+.metricChartHead { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 8px; }
+.metricName { font: 600 12px var(--mono); color: var(--text-bright); overflow-wrap: anywhere; }
+.metricHelp { margin-top: 3px; font: 400 10px/1.4 var(--sans); color: var(--muted-2); }
+.metricType { font: 500 9px var(--mono); color: var(--faint); text-transform: uppercase; }
+.metricPlot { flex: 1; min-height: 170px; width: 100%; overflow: hidden; }
+.metricPlot .uplot { color: #8b98a9; font-family: var(--mono); }
+.metricPlot .u-legend { color: #8b98a9; font: 9px var(--mono); text-align: left; max-height: 42px; overflow: auto; scrollbar-width: thin; }
+.metricPlot .u-legend .u-series > * { padding: 2px 5px 2px 0; }
+.metricPlot .u-legend .u-value { color: #c5cfdb; }
+.metricPlot .u-select { background: rgba(88, 166, 255, .12); }
+
+/* target metrics drawer: charts flow into exactly two rows, then horizontally */
+.metricsDrawer { position: fixed; inset: 0; z-index: 120; display: none; }
+.metricsDrawer.open { display: block; }
+.metricsDrawerBackdrop { position: absolute; inset: 0; background: rgba(2, 5, 9, .72); backdrop-filter: blur(2px); }
+.metricsDrawerPanel { position: absolute; left: 3vw; right: 3vw; bottom: 0; height: min(86vh, 900px); display: flex; flex-direction: column; background: #0d1118; border: 1px solid #2a3546; border-bottom: 0; border-radius: 14px 14px 0 0; box-shadow: 0 -18px 60px rgba(0, 0, 0, .65); }
+.metricsDrawerHeader { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 16px 20px; border-bottom: 1px solid var(--border); }
+.metricsDrawerHeader h2 { margin: 0 0 4px; font: 600 17px var(--mono); color: var(--text-bright); }
+.metricsDrawerBody { flex: 1; min-height: 0; overflow: hidden; padding: 14px; }
+.metricsDrawerGrid { height: 100%; display: grid; grid-template-rows: repeat(2, minmax(0, 1fr)); grid-auto-flow: column; grid-auto-columns: minmax(430px, 1fr); gap: 12px; overflow-x: auto; overflow-y: hidden; padding-bottom: 6px; }
+.metricsDrawerGrid .metricChart { min-width: 0; overflow: hidden; }
+.metricsDrawerMessage { height: 100%; display: grid; place-items: center; font: 400 12px var(--mono); color: var(--muted-2); }
 
 .childList { display: flex; flex-direction: column; gap: 5px; }
 .childRow { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 13px; border-radius: 8px; cursor: pointer; background: var(--panel-3); border: 1px solid var(--border-2); border-left: 2px solid rgba(255, 255, 255, .06); transition: background .1s ease; }

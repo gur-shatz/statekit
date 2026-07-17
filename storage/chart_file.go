@@ -116,6 +116,10 @@ func (this *FileChartStore) Bucket(scope string, t time.Time) ([]TriggeringState
 	return this.memory.Bucket(scope, t)
 }
 
+func (this *FileChartStore) ChartStats() ChartStoreStats {
+	return this.memory.ChartStats()
+}
+
 // append writes one record to the day segment for the record's bucket time,
 // rolling to a new segment (and sweeping expired ones) on day change. Callers
 // hold the lock.

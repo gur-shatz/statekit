@@ -33,6 +33,71 @@ sources that go silent for ten of their own ingest intervals
 (`WithEvictionFallback` sets the fallback TTL). Worst-case memory is
 computable from configuration.
 
+## Metrics timeseries
+
+Metrics aggregation is opt-in. Create a bounded metrics store and connect the
+scraper to it explicitly:
+
+```go
+metrics := storage.NewMemoryMetricsStore(30*time.Minute, 100)
+store := storage.NewMemoryStore(storage.WithMetricsStore(metrics))
+sc, _ := scraper.New(cfg, scraper.WithMetricsIngestor(metrics))
+```
+
+Samples are keyed by their complete `scrape_path`. Repeated strings are held
+once in a dictionary, label sets are encoded as integer postings, and each
+series stores parallel `[]int64` Unix-second timestamps and `[]float64`
+measurements. The default window is 30 minutes and each metric/key retains at
+most 100 label sets; when cardinality exceeds that cap, the label sets with
+the smallest latest values are dropped. Override the backend with
+`WithMetricsStore(NewMemoryMetricsStore(retention, seriesCap))`.
+
+The point payload is approximately 16 bytes per retained observation:
+
+`keys × metrics/key × series/metric × (retention / scrape interval) × 16`
+
+At a 15-second scrape interval, a 30-minute series has 120 points, or 1.9 KiB
+of timestamp/value payload. For 100 metrics averaging 10 label sets on one
+key, that is about 1.9 MiB plus slice, map, postings, and interned-string
+overhead (typically a few additional MiB). At the hard 100-series cap it is
+about 19.2 MiB of point payload per key. A one-second interval costs 15 times
+as much. Go slice spare capacity can temporarily make the point columns
+approach twice their logical size.
+
+When no metrics store is supplied, `GET /metrics/status` returns
+`{"enabled":false}`, `/metrics/timeseries` returns 404, and the console hides
+the target Metrics buttons.
+
+## Self-observability
+
+Storage exposes its own state and Prometheus collector through
+`store.Observability()`:
+
+```go
+store := storage.NewMemoryStore(...)
+_ = registry.Register(store.Observability())
+```
+
+The `storage` state contains `estimated_size_kib`, `items`,
+`metrics_aggregator_enabled`, and any persistence backend error. It warns when
+the journal or file chart backend reports an error.
+
+The same data is scrapeable as:
+
+- `statekit_storage_estimated_size_kib{area="..."}` — estimated retained
+  memory for current state, transitions, charts, metrics, incidents, mutes,
+  bookkeeping, document-cache capacity, and the total.
+- `statekit_storage_items{kind="..."}` — targets, states, transitions,
+  incidents/events, chart entries, metric keys/families/series/points/labels,
+  cache entries, and the total.
+- `statekit_storage_metrics_aggregator_enabled`
+- `statekit_storage_backend_error`
+
+Sizes include point/slice capacity and approximate Go map/string overhead.
+They are intended for trend monitoring and capacity alerts, not as an exact
+replacement for Go heap metrics. The observer caches the structural scan for
+one second so a registry state+metrics scrape computes it once.
+
 The charting store (`ChartStore`) is a separate timeseries component: at
 ingest it records, per time bucket, which states were triggering (non-pass),
 with display labels captured at write time. It answers the fleet/target
@@ -112,6 +177,13 @@ polls as one small summary body plus 304s. The pre-layer endpoints
 UIs consume the layers directly: the poll reads L1 conditionally, selecting
 a target fetches its L2 document revalidated by its `material_hash` ETag,
 and history and charts come from the L3 endpoints.
+
+`GET /metrics/timeseries?key=<scrape_path>&window=30m` returns target metrics
+grouped first by metric and then label set. Each target row in the console has
+a **Metrics** button that opens a two-row chart drawer; it renders one chart
+per metric with label sets as separate lines. Charts use the vendored
+MIT-licensed uPlot 1.6.32 library for responsive Canvas rendering, local-time
+axes, cursor values, and drag-to-zoom (double-click resets the time range).
 
 The API contract is available at `/openapi.yaml` and is enforced by a
 contract test: every served route must be documented, every documented route

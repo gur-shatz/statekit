@@ -26,6 +26,10 @@ const state = {
   byId: new Map(), // identity -> StateDetail, selected target only
   childrenByParent: new Map(),
   history: [], // transitions of the selected identity, newest first
+  metrics: null, // MetricsDocument displayed in the target metrics drawer
+  metricsTarget: null,
+  metricsDrawerOpen: false,
+  metricsEnabled: false,
   bucketTips: new Map(), // bucket time -> contributors from /state/timeline/bucket
 };
 
@@ -75,14 +79,16 @@ function chartPath() {
 }
 
 async function refresh() {
-  const [targets, incidents, chart] = await Promise.all([
+  const [targets, incidents, chart, metricsStatus] = await Promise.all([
     fetchJSON("/state/targets"),
     fetchJSON("/escalations/incidents"),
     fetchJSON(chartPath()),
+    fetchJSON("/metrics/status").catch(() => ({ enabled: false })),
   ]);
   state.targets = normalizeTargets(targets);
   state.incidents = incidents || [];
   state.chart = chart || [];
+  state.metricsEnabled = metricsStatus?.enabled === true;
   state.bucketTips = new Map();
 
   if (!state.selectedTarget || !state.targets.some((t) => t.key === state.selectedTarget)) {
@@ -350,6 +356,7 @@ function renderRail() {
           <div class="name truncate">${esc(target.name)}</div>
           <div class="host truncate">${esc(target.scrapePath)}</div>
         </div>
+        ${state.metricsEnabled ? `<button class="targetMetricsBtn" type="button" data-metrics-target="${esc(target.key)}">Metrics</button>` : ""}
       </div>
       <div class="chips">${chips}</div>
       <div class="chips">${issues}</div>
@@ -479,6 +486,207 @@ function renderDetail() {
   }
 
   bodyEl.innerHTML = parts.join("");
+}
+
+const metricColors = ["#58a6ff", "#3fb950", "#d29922", "#ff7b72", "#bc8cff", "#39c5cf", "#f778ba", "#8b949e"];
+let metricChartInstances = [];
+let metricChartObservers = [];
+let metricChartRenderToken = 0;
+
+function metricChartModel(metric, index) {
+  const series = (metric.series || []).filter((s) => s.timestamps?.length && s.timestamps.length === s.values?.length);
+  if (!series.length) return null;
+  const timestampSet = new Set();
+  series.forEach((s) => s.timestamps.forEach((t, i) => {
+    const tn = Number(t), v = Number(s.values[i]);
+    if (Number.isFinite(tn) && Number.isFinite(v)) timestampSet.add(tn);
+  }));
+  const timestamps = Array.from(timestampSet).sort((a, b) => a - b);
+  if (!timestamps.length) return null;
+  const positions = new Map(timestamps.map((t, i) => [t, i]));
+  const data = [timestamps];
+  series.forEach((s) => {
+    const values = new Array(timestamps.length).fill(null);
+    s.timestamps.forEach((t, i) => {
+      const tn = Number(t), value = Number(s.values[i]);
+      if (positions.has(tn) && Number.isFinite(value)) values[positions.get(tn)] = value;
+    });
+    data.push(values);
+  });
+  return {
+    id: `metricPlot${index}`,
+    metric,
+    sourceSeries: series,
+    data,
+    labels: metricSeriesLabels(series),
+    minTime: timestamps[0],
+    maxTime: timestamps[timestamps.length - 1],
+  };
+}
+
+function metricSeriesLabels(series) {
+  const common = new Map();
+  if (series.length > 1) {
+    Object.entries(series[0].labels || {}).forEach(([key, value]) => {
+      if (series.every((item) => item.labels?.[key] === value)) common.set(key, value);
+    });
+  }
+  return series.map((item) => {
+    const entries = Object.entries(item.labels || {})
+      .filter(([key, value]) => common.get(key) !== value)
+      .sort(([a], [b]) => a.localeCompare(b));
+    return entries.map(([key, value]) => `${key}=${value}`).join(", ") || "value";
+  });
+}
+
+function metricChartShell(model) {
+  const metric = model.metric;
+  return `<article class="metricChart">
+    <div class="metricChartHead">
+      <div><div class="metricName">${esc(metric.name)}</div>${metric.help ? `<div class="metricHelp">${esc(metric.help)}</div>` : ""}</div>
+      <span class="metricType">${esc(metric.type || "")}</span>
+    </div>
+    <div class="metricPlot" id="${model.id}" aria-label="${esc(metric.name)} time-series chart"></div>
+  </article>`;
+}
+
+function formatMetricValue(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return "—";
+  const abs = Math.abs(n);
+  if (abs >= 1e6 || (abs > 0 && abs < 0.001)) return n.toExponential(2);
+  return new Intl.NumberFormat(undefined, { maximumFractionDigits: 3 }).format(n);
+}
+
+function chartTimeLabel(timestamp, rangeSeconds, includeDate) {
+  const date = new Date(timestamp * 1000);
+  if (includeDate || rangeSeconds >= 24 * 60 * 60) {
+    return date.toLocaleString(undefined, {
+      month: "short", day: "numeric", hour: "2-digit", minute: "2-digit",
+    });
+  }
+  return date.toLocaleTimeString(undefined, {
+    hour: "2-digit", minute: "2-digit", second: rangeSeconds <= 2 * 60 * 60 ? "2-digit" : undefined,
+  });
+}
+
+function destroyMetricCharts() {
+  metricChartObservers.forEach((observer) => observer.disconnect());
+  metricChartInstances.forEach((chart) => chart.destroy());
+  metricChartObservers = [];
+  metricChartInstances = [];
+}
+
+function mountMetricCharts(models) {
+  destroyMetricCharts();
+  if (typeof uPlot === "undefined") {
+    $("metricsDrawerBody").innerHTML = `<div class="metricsDrawerMessage">Chart library failed to load</div>`;
+    return;
+  }
+  models.forEach((model) => {
+    const host = $(model.id);
+    if (!host) return;
+    const range = Math.max(1, model.maxTime - model.minTime);
+    const options = {
+      width: Math.max(320, host.clientWidth),
+      height: Math.max(170, host.clientHeight),
+      padding: [8, 8, 0, 0],
+      cursor: { drag: { x: true, y: false, setScale: true } },
+      legend: { show: true, live: true },
+      scales: { x: { time: true }, y: { auto: true } },
+      axes: [
+        {
+          stroke: "#718096", grid: { stroke: "#202a38", width: 1 },
+          ticks: { stroke: "#344258", width: 1 },
+          values: (_chart, values) => values.map((value) => chartTimeLabel(value, range, false)),
+          font: "10px IBM Plex Mono", size: 44, gap: 7,
+        },
+        {
+          stroke: "#718096", grid: { stroke: "#202a38", width: 1 },
+          ticks: { stroke: "#344258", width: 1 },
+          values: (_chart, values) => values.map(formatMetricValue),
+          font: "10px IBM Plex Mono", size: 58, gap: 7,
+        },
+      ],
+      series: [
+        {
+          label: "Time",
+          value: (_chart, value) => value == null ? "—" : chartTimeLabel(value, range, true),
+        },
+        ...model.sourceSeries.map((series, index) => ({
+          label: model.labels[index],
+          stroke: metricColors[index % metricColors.length],
+          width: 2,
+          spanGaps: true,
+          value: (_chart, value) => value == null ? "—" : formatMetricValue(value),
+          points: { show: series.timestamps.length === 1, size: 6 },
+        })),
+      ],
+    };
+    const chart = new uPlot(options, model.data, host);
+    host.addEventListener("dblclick", () => {
+      chart.setScale("x", { min: model.minTime, max: model.maxTime });
+    });
+    const observer = new ResizeObserver((entries) => {
+      const box = entries[0]?.contentRect;
+      if (!box || box.width < 1 || box.height < 1) return;
+      const width = Math.round(box.width), height = Math.round(box.height);
+      if (chart.width !== width || chart.height !== height) chart.setSize({ width, height });
+    });
+    observer.observe(host);
+    metricChartInstances.push(chart);
+    metricChartObservers.push(observer);
+  });
+}
+
+async function openMetricsDrawer(targetKey) {
+  if (!state.metricsEnabled) return;
+  const target = state.targets.find((item) => item.key === targetKey);
+  if (!target) return;
+  state.metricsTarget = target;
+  state.metrics = null;
+  state.metricsDrawerOpen = true;
+  renderMetricsDrawer();
+  const path = `/metrics/timeseries?key=${encodeURIComponent(target.scrapePath)}&window=30m`;
+  const metrics = await fetchJSON(path);
+  if (!state.metricsDrawerOpen || state.metricsTarget?.key !== targetKey) return;
+  state.metrics = metrics;
+  renderMetricsDrawer();
+}
+
+function closeMetricsDrawer() {
+  state.metricsDrawerOpen = false;
+  metricChartRenderToken++;
+  destroyMetricCharts();
+  $("metricsDrawer").classList.remove("open");
+  $("metricsDrawer").setAttribute("aria-hidden", "true");
+}
+
+function renderMetricsDrawer() {
+  const renderToken = ++metricChartRenderToken;
+  const drawer = $("metricsDrawer");
+  if (!state.metricsDrawerOpen || !state.metricsTarget) {
+    closeMetricsDrawer();
+    return;
+  }
+  drawer.classList.add("open");
+  drawer.setAttribute("aria-hidden", "false");
+  $("metricsDrawerTitle").textContent = `${state.metricsTarget.name} Metrics`;
+  $("metricsDrawerSub").textContent = `${state.metricsTarget.scrapePath} · last 30 minutes · drag to zoom · double-click to reset`;
+  if (!state.metrics) {
+    destroyMetricCharts();
+    $("metricsDrawerBody").innerHTML = `<div class="metricsDrawerMessage">Loading metrics…</div>`;
+    return;
+  }
+  const models = (state.metrics.metrics || []).map(metricChartModel).filter(Boolean);
+  $("metricsDrawerBody").innerHTML = models.length
+    ? `<div class="metricsDrawerGrid">${models.map(metricChartShell).join("")}</div>`
+    : `<div class="metricsDrawerMessage">No retained metrics for this target</div>`;
+  if (models.length) {
+    requestAnimationFrame(() => {
+      if (state.metricsDrawerOpen && renderToken === metricChartRenderToken) mountMetricCharts(models);
+    });
+  }
 }
 
 function muteControlsHTML(node) {
@@ -805,10 +1013,21 @@ $("timelineWindow").addEventListener("change", (e) => {
 });
 
 $("targets").addEventListener("click", (e) => {
+  const metricsButton = e.target.closest("[data-metrics-target]");
+  if (metricsButton) {
+    e.stopPropagation();
+    openMetricsDrawer(metricsButton.dataset.metricsTarget).catch(showError);
+    return;
+  }
   const row = e.target.closest("[data-target]");
   const issue = e.target.closest(".issueChip");
   if (issue && row) { e.stopPropagation(); selectTarget(row.dataset.target, issue.dataset.identity); return; }
   if (row) selectTarget(row.dataset.target);
+});
+$("metricsDrawerClose").addEventListener("click", closeMetricsDrawer);
+$("metricsDrawerBackdrop").addEventListener("click", closeMetricsDrawer);
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && state.metricsDrawerOpen) closeMetricsDrawer();
 });
 $("states").addEventListener("click", (e) => {
   const check = e.target.closest(".checkRow");

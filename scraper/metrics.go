@@ -63,7 +63,11 @@ func (this *scrapedMetricsCollector) update(targetKey string, samples []statekit
 	}
 }
 
-func buildMetrics(target TargetConfig, cfg Config, client *http.Client, collector *scrapedMetricsCollector) *taskRunner {
+func buildMetrics(target TargetConfig, cfg Config, client *http.Client, collector *scrapedMetricsCollector, ingestors ...MetricsIngestor) *taskRunner {
+	var ingestor MetricsIngestor
+	if len(ingestors) != 0 {
+		ingestor = ingestors[0]
+	}
 	labels := targetLabels(cfg.Labels, target, target.Metrics.Labels)
 	interval := resolveInterval(target.Metrics.Interval, target.Interval, cfg.Defaults.Interval)
 	timeout := resolveTimeout(target.Metrics.Timeout, target.Timeout, cfg.Defaults.Timeout)
@@ -80,6 +84,7 @@ func buildMetrics(target TargetConfig, cfg Config, client *http.Client, collecto
 	tick := func(ctx context.Context) {
 		var allSamples []statekit.PrometheusSample
 		var allDescs []statekit.PrometheusDesc
+		samplesByKey := map[string][]statekit.PrometheusSample{}
 		for _, p := range paths {
 			descs, samples, err := scrapeMetricsPath(ctx, client, resolveURL(target.BaseURL, p), timeout)
 			if err != nil {
@@ -105,10 +110,6 @@ func buildMetrics(target TargetConfig, cfg Config, client *http.Client, collecto
 					scrapedFrom = source
 				}
 				samples[i].Labels["scraped_from"] = scrapedFrom
-				if target.Metrics.DropScrapePath {
-					delete(samples[i].Labels, "scrape_path")
-					continue
-				}
 				if scrapePath == "" {
 					scrapePath = samples[i].Labels["scrape_path"]
 				}
@@ -120,12 +121,23 @@ func buildMetrics(target TargetConfig, cfg Config, client *http.Client, collecto
 				} else {
 					scrapePath = source + " > " + scrapePath
 				}
+				samplesByKey[scrapePath] = append(samplesByKey[scrapePath], samples[i])
+				if target.Metrics.DropScrapePath {
+					delete(samples[i].Labels, "scrape_path")
+					continue
+				}
 				samples[i].Labels["scrape_path"] = scrapePath
 			}
 			allSamples = append(allSamples, samples...)
 			allDescs = append(allDescs, descs...)
 		}
 		collector.update(targetKey(target), allSamples, allDescs)
+		if ingestor != nil {
+			observedAt := time.Now()
+			for key, keyedSamples := range samplesByKey {
+				ingestor.IngestMetrics(key, allDescs, keyedSamples, observedAt)
+			}
+		}
 	}
 
 	return &taskRunner{name: name, interval: interval, tick: tick}
