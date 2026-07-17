@@ -13,6 +13,7 @@ type PrometheusDesc struct {
 	Name   string         `json:"name" yaml:"name"`
 	Help   string         `json:"help,omitempty" yaml:"help,omitempty"`
 	Type   PrometheusType `json:"type" yaml:"type"`
+	Unit   string         `json:"unit,omitempty" yaml:"unit,omitempty"`
 	Labels []string       `json:"labels,omitempty" yaml:"labels,omitempty"`
 }
 

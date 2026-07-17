@@ -54,6 +54,7 @@ type MetricSeries struct {
 	Name   string              `json:"name"`
 	Help   string              `json:"help,omitempty"`
 	Type   string              `json:"type,omitempty"`
+	Unit   string              `json:"unit,omitempty"`
 	Series []MeasurementSeries `json:"series"`
 }
 
@@ -63,6 +64,7 @@ type MeasurementSeries struct {
 	Labels     map[string]string `json:"labels,omitempty"`
 	Timestamps []int64           `json:"timestamps"`
 	Values     []float64         `json:"values"`
+	Constant   bool              `json:"constant"`
 }
 
 // MemoryMetricsStore interns all repeated strings and stores label sets as
@@ -85,13 +87,16 @@ type stringDictionary struct {
 type encodedDesc struct {
 	help uint32
 	typ  uint32
+	unit uint32
 }
 
 type encodedSeries struct {
 	// postings is [label-name-id, label-value-id, ...], sorted by name ID.
-	postings   []uint32
-	timestamps []int64
-	values     []float64
+	postings      []uint32
+	timestamps    []int64
+	values        []float64
+	constantValue float64
+	constantCount int
 }
 
 // NewMemoryMetricsStore creates a metrics store. Non-positive arguments use
@@ -135,10 +140,6 @@ func (this *MemoryMetricsStore) IngestMetrics(key string, descs []statekit.Prome
 	if len(byMetric) == 0 {
 		return
 	}
-	descByName := make(map[string]statekit.PrometheusDesc, len(descs))
-	for _, desc := range descs {
-		descByName[desc.Name] = desc
-	}
 	keyID := this.dict.intern(key)
 	removed := false
 	for name, metricSamples := range byMetric {
@@ -152,10 +153,11 @@ func (this *MemoryMetricsStore) IngestMetrics(key string, descs []statekit.Prome
 			metricSamples = metricSamples[:this.seriesCap]
 		}
 		metricID := this.dict.intern(name)
-		if desc, ok := descByName[name]; ok {
+		if desc, ok := metricDescriptor(name, descs); ok {
 			this.descs[metricID] = encodedDesc{
 				help: this.dict.intern(desc.Help),
 				typ:  this.dict.intern(string(desc.Type)),
+				unit: this.dict.intern(desc.Unit),
 			}
 		}
 		if this.keys[keyID] == nil {
@@ -172,11 +174,27 @@ func (this *MemoryMetricsStore) IngestMetrics(key string, descs []statekit.Prome
 				this.keys[keyID][metricID][signature] = series
 			}
 			n := len(series.timestamps)
-			if n > 0 && series.timestamps[n-1] == ts {
-				series.values[n-1] = sample.Value
+			if n > 0 {
+				lastTimestamp := series.timestamps[n-1]
+				if ts < lastTimestamp {
+					continue
+				}
+				if ts == lastTimestamp {
+					if series.values[n-1] == sample.Value {
+						continue
+					}
+					series.values[n-1] = sample.Value
+					updateConstantRun(series)
+					continue
+				}
+			}
+			series.timestamps = append(series.timestamps, ts)
+			series.values = append(series.values, sample.Value)
+			if n > 0 && series.constantValue == sample.Value {
+				series.constantCount++
 			} else {
-				series.timestamps = append(series.timestamps, ts)
-				series.values = append(series.values, sample.Value)
+				series.constantValue = sample.Value
+				series.constantCount = 1
 			}
 		}
 		removed = this.enforceSeriesCapLocked(this.keys[keyID][metricID]) || removed
@@ -220,6 +238,7 @@ func (this *MemoryMetricsStore) Metrics(key string, from, to time.Time) (Metrics
 			Name:   this.dict.lookup(metricID),
 			Help:   this.dict.lookup(desc.help),
 			Type:   this.dict.lookup(desc.typ),
+			Unit:   this.dict.lookup(desc.unit),
 			Series: []MeasurementSeries{},
 		}
 		for _, series := range encoded {
@@ -228,10 +247,12 @@ func (this *MemoryMetricsStore) Metrics(key string, from, to time.Time) (Metrics
 			if start == end {
 				continue
 			}
+			values := append([]float64(nil), series.values[start:end]...)
 			metric.Series = append(metric.Series, MeasurementSeries{
 				Labels:     this.decodeLabels(series.postings),
 				Timestamps: append([]int64(nil), series.timestamps[start:end]...),
-				Values:     append([]float64(nil), series.values[start:end]...),
+				Values:     values,
+				Constant:   constantRunEndingAt(series, end) >= end-start,
 			})
 		}
 		if len(metric.Series) == 0 {
@@ -310,6 +331,9 @@ func (this *MemoryMetricsStore) trimLocked(cutoff int64) bool {
 				if first > 0 {
 					series.timestamps = append(series.timestamps[:0], series.timestamps[first:]...)
 					series.values = append(series.values[:0], series.values[first:]...)
+					if series.constantCount > len(series.values) {
+						series.constantCount = len(series.values)
+					}
 				}
 				if len(series.timestamps) == 0 {
 					delete(seriesMap, signature)
@@ -348,6 +372,7 @@ func (this *MemoryMetricsStore) compactDictionaryLocked() {
 				newDescs[metricID] = encodedDesc{
 					help: newDict.intern(oldDict.lookup(desc.help)),
 					typ:  newDict.intern(oldDict.lookup(desc.typ)),
+					unit: newDict.intern(oldDict.lookup(desc.unit)),
 				}
 			}
 			for _, series := range seriesMap {
@@ -363,7 +388,11 @@ func (this *MemoryMetricsStore) compactDictionaryLocked() {
 					signature.WriteByte(',')
 				}
 				newKeys[keyID][metricID][signature.String()] = &encodedSeries{
-					postings: postings, timestamps: series.timestamps, values: series.values,
+					postings:      postings,
+					timestamps:    series.timestamps,
+					values:        series.values,
+					constantValue: series.constantValue,
+					constantCount: series.constantCount,
 				}
 			}
 		}
@@ -442,4 +471,53 @@ func canonicalLabels(labels map[string]string) string {
 		out.WriteByte(0)
 	}
 	return out.String()
+}
+
+func metricDescriptor(sampleName string, descs []statekit.PrometheusDesc) (statekit.PrometheusDesc, bool) {
+	for _, desc := range descs {
+		if sampleName == desc.Name {
+			return desc, true
+		}
+		if desc.Type == statekit.PrometheusCounter {
+			if sampleName == desc.Name+"_total" || sampleName == desc.Name+"_created" {
+				return desc, true
+			}
+		}
+		if desc.Type == statekit.PrometheusHistogram || desc.Type == statekit.PrometheusSummary {
+			if sampleName == desc.Name+"_sum" || sampleName == desc.Name+"_count" ||
+				(desc.Type == statekit.PrometheusHistogram && sampleName == desc.Name+"_bucket") {
+				return desc, true
+			}
+		}
+	}
+	return statekit.PrometheusDesc{}, false
+}
+
+func updateConstantRun(series *encodedSeries) {
+	n := len(series.values)
+	if n == 0 {
+		series.constantValue = 0
+		series.constantCount = 0
+		return
+	}
+	series.constantValue = series.values[n-1]
+	series.constantCount = 1
+	for i := n - 2; i >= 0 && series.values[i] == series.constantValue; i-- {
+		series.constantCount++
+	}
+}
+
+func constantRunEndingAt(series *encodedSeries, end int) int {
+	if end == len(series.values) {
+		return series.constantCount
+	}
+	if end <= 0 {
+		return 0
+	}
+	value := series.values[end-1]
+	count := 1
+	for i := end - 2; i >= 0 && series.values[i] == value; i-- {
+		count++
+	}
+	return count
 }

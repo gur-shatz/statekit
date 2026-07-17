@@ -30,6 +30,7 @@ const state = {
   metricsTarget: null,
   metricsDrawerOpen: false,
   metricsEnabled: false,
+  metricsRefreshMs: 5000,
   bucketTips: new Map(), // bucket time -> contributors from /state/timeline/bucket
 };
 
@@ -492,9 +493,31 @@ const metricColors = ["#58a6ff", "#3fb950", "#d29922", "#ff7b72", "#bc8cff", "#3
 let metricChartInstances = [];
 let metricChartObservers = [];
 let metricChartRenderToken = 0;
+let metricRefreshTimer = null;
+let metricRequestToken = 0;
+
+function counterDeltaSeries(series) {
+  const timestamps = [];
+  const values = [];
+  for (let i = 1; i < series.values.length; i++) {
+    const previous = Number(series.values[i - 1]);
+    const current = Number(series.values[i]);
+    const timestamp = Number(series.timestamps[i]);
+    if (!Number.isFinite(previous) || !Number.isFinite(current) || !Number.isFinite(timestamp)) continue;
+    timestamps.push(timestamp);
+    // A lower value means the counter reset. Attribute the post-reset value
+    // to this interval instead of drawing a negative spike.
+    values.push(current >= previous ? current - previous : current);
+  }
+  return { ...series, timestamps, values };
+}
 
 function metricChartModel(metric, index) {
-  const series = (metric.series || []).filter((s) => s.timestamps?.length && s.timestamps.length === s.values?.length);
+  const isCounter = String(metric.type || "").toLowerCase() === "counter";
+  const series = (metric.series || [])
+    .filter((s) => !s.constant && s.timestamps?.length && s.timestamps.length === s.values?.length)
+    .map((series) => isCounter ? counterDeltaSeries(series) : series)
+    .filter((series) => series.timestamps.length);
   if (!series.length) return null;
   const timestampSet = new Set();
   series.forEach((s) => s.timestamps.forEach((t, i) => {
@@ -541,21 +564,103 @@ function metricSeriesLabels(series) {
 
 function metricChartShell(model) {
   const metric = model.metric;
+  const metadata = [
+    metric.type,
+    String(metric.type || "").toLowerCase() === "counter" ? "delta" : "",
+    metric.unit,
+  ].filter(Boolean).join(" · ");
   return `<article class="metricChart">
     <div class="metricChartHead">
       <div><div class="metricName">${esc(metric.name)}</div>${metric.help ? `<div class="metricHelp">${esc(metric.help)}</div>` : ""}</div>
-      <span class="metricType">${esc(metric.type || "")}</span>
+      <span class="metricType">${esc(metadata)}</span>
     </div>
     <div class="metricPlot" id="${model.id}" aria-label="${esc(metric.name)} time-series chart"></div>
   </article>`;
 }
 
-function formatMetricValue(value) {
+function formatSeconds(value) {
+  const sign = value < 0 ? "−" : "";
+  let remaining = Math.abs(value);
+  if (remaining > 0 && remaining < 1e-6) return `${sign}${Math.round(remaining * 1e9)}ns`;
+  if (remaining < 0.001) return `${sign}${formatMetricNumber(remaining * 1e6)}µs`;
+  if (remaining < 1) return `${sign}${formatMetricNumber(remaining * 1e3)}ms`;
+  let remainingMilliseconds = Math.round(remaining * 1000);
+  const days = Math.floor(remainingMilliseconds / 86400000);
+  remainingMilliseconds -= days * 86400000;
+  const hours = Math.floor(remainingMilliseconds / 3600000);
+  remainingMilliseconds -= hours * 3600000;
+  const minutes = Math.floor(remainingMilliseconds / 60000);
+  remainingMilliseconds -= minutes * 60000;
+  const seconds = Math.floor(remainingMilliseconds / 1000);
+  const milliseconds = remainingMilliseconds - seconds * 1000;
+  const parts = [];
+  if (days) parts.push(`${days}d`);
+  if (hours) parts.push(`${hours}h`);
+  if (minutes) parts.push(`${minutes}m`);
+  if (seconds || (!days && !hours && !minutes)) parts.push(`${seconds}s`);
+  if (milliseconds) parts.push(`${milliseconds}ms`);
+  return sign + parts.join(" ");
+}
+
+function formatBytes(value) {
+  const units = ["B", "KiB", "MiB", "GiB", "TiB", "PiB"];
+  let scaled = Math.abs(value), index = 0;
+  while (scaled >= 1024 && index < units.length - 1) {
+    scaled /= 1024;
+    index++;
+  }
+  return `${value < 0 ? "−" : ""}${formatMetricNumber(scaled)} ${units[index]}`;
+}
+
+function formatMetricNumber(value) {
   const n = Number(value);
   if (!Number.isFinite(n)) return "—";
   const abs = Math.abs(n);
   if (abs >= 1e6 || (abs > 0 && abs < 0.001)) return n.toExponential(2);
   return new Intl.NumberFormat(undefined, { maximumFractionDigits: 3 }).format(n);
+}
+
+function formatMetricValue(value, unit = "") {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return "—";
+  const normalizedUnit = String(unit || "").toLowerCase();
+  if (normalizedUnit === "seconds" || normalizedUnit === "second" || normalizedUnit === "s") return formatSeconds(n);
+  if (normalizedUnit === "bytes" || normalizedUnit === "byte") return formatBytes(n);
+  const formatted = formatMetricNumber(n);
+  return unit ? `${formatted} ${unit}` : formatted;
+}
+
+function constantMetricItems(metrics) {
+  const items = [];
+  (metrics || []).forEach((metric) => {
+    (metric.series || []).forEach((series) => {
+      if (!series.constant || !series.values?.length) return;
+      items.push({
+        name: metric.name,
+        labels: metricSeriesLabels([series])[0],
+        help: metric.help || "",
+        unit: metric.unit || "",
+        value: series.values[series.values.length - 1],
+      });
+    });
+  });
+  return items.sort((a, b) => a.name.localeCompare(b.name) || a.labels.localeCompare(b.labels));
+}
+
+function constantMetricsShell(items) {
+  const rows = items.length
+    ? items.map((item) => `<div class="constantMetric" title="${esc(item.help)}">
+        <div class="constantMetricKey">
+          <span>${esc(item.name)}</span>
+          ${item.labels !== "value" ? `<small>${esc(item.labels)}</small>` : ""}
+        </div>
+        <div class="constantMetricValue">${esc(formatMetricValue(item.value, item.unit))}</div>
+      </div>`).join("")
+    : `<div class="metricsColumnEmpty">No constant values in this window</div>`;
+  return `<section class="metricsConstants">
+    <div class="metricsColumnHead"><span>Constant values</span><span>${items.length}</span></div>
+    <div class="metricsConstantList">${rows}</div>
+  </section>`;
 }
 
 function chartTimeLabel(timestamp, rangeSeconds, includeDate) {
@@ -577,6 +682,61 @@ function destroyMetricCharts() {
   metricChartInstances = [];
 }
 
+function metricTooltipPlugin(model) {
+  let tooltip = null;
+  return {
+    hooks: {
+      ready: (chart) => {
+        tooltip = document.createElement("div");
+        tooltip.className = "metricChartTooltip";
+        tooltip.setAttribute("role", "tooltip");
+        chart.over.appendChild(tooltip);
+      },
+      setCursor: (chart) => {
+        if (!tooltip) return;
+        const index = chart.cursor.idx;
+        const left = chart.cursor.left;
+        const top = chart.cursor.top;
+        if (index == null || left == null || top == null) {
+          tooltip.style.display = "none";
+          return;
+        }
+        const timestamp = chart.data[0][index];
+        if (!Number.isFinite(timestamp)) {
+          tooltip.style.display = "none";
+          return;
+        }
+        const rows = model.labels.map((label, seriesIndex) => {
+          if (chart.series[seriesIndex + 1]?.show === false) return "";
+          const value = chart.data[seriesIndex + 1]?.[index];
+          const color = metricColors[seriesIndex % metricColors.length];
+          return `<div class="metricTooltipRow">
+            <span class="metricTooltipDot" style="background:${color}"></span>
+            <span class="metricTooltipLabel">${esc(label)}</span>
+            <span class="metricTooltipValue">${esc(value == null ? "—" : formatMetricValue(value, model.metric.unit))}</span>
+          </div>`;
+        }).join("");
+        tooltip.innerHTML = `<div class="metricTooltipTime">${esc(chartTimeLabel(timestamp, Math.max(1, model.maxTime - model.minTime), true))}</div>${rows}`;
+        tooltip.style.display = "block";
+
+        const width = tooltip.offsetWidth;
+        const height = tooltip.offsetHeight;
+        const overWidth = chart.over.clientWidth;
+        const overHeight = chart.over.clientHeight;
+        const tooltipLeft = left > overWidth / 2
+          ? Math.max(8, left - width - 14)
+          : Math.min(left + 14, Math.max(8, overWidth - width - 8));
+        const tooltipTop = Math.min(
+          Math.max(8, top + 14),
+          Math.max(8, overHeight - height - 8),
+        );
+        tooltip.style.left = `${tooltipLeft}px`;
+        tooltip.style.top = `${tooltipTop}px`;
+      },
+    },
+  };
+}
+
 function mountMetricCharts(models) {
   destroyMetricCharts();
   if (typeof uPlot === "undefined") {
@@ -593,6 +753,7 @@ function mountMetricCharts(models) {
       padding: [8, 8, 0, 0],
       cursor: { drag: { x: true, y: false, setScale: true } },
       legend: { show: true, live: true },
+      plugins: [metricTooltipPlugin(model)],
       scales: { x: { time: true }, y: { auto: true } },
       axes: [
         {
@@ -604,7 +765,7 @@ function mountMetricCharts(models) {
         {
           stroke: "#718096", grid: { stroke: "#202a38", width: 1 },
           ticks: { stroke: "#344258", width: 1 },
-          values: (_chart, values) => values.map(formatMetricValue),
+          values: (_chart, values) => values.map((value) => formatMetricValue(value, model.metric.unit)),
           font: "10px IBM Plex Mono", size: 58, gap: 7,
         },
       ],
@@ -618,7 +779,7 @@ function mountMetricCharts(models) {
           stroke: metricColors[index % metricColors.length],
           width: 2,
           spanGaps: true,
-          value: (_chart, value) => value == null ? "—" : formatMetricValue(value),
+          value: (_chart, value) => value == null ? "—" : formatMetricValue(value, model.metric.unit),
           points: { show: series.timestamps.length === 1, size: 6 },
         })),
       ],
@@ -639,6 +800,34 @@ function mountMetricCharts(models) {
   });
 }
 
+async function refreshMetricsDrawer() {
+  if (!state.metricsDrawerOpen || !state.metricsTarget) return;
+  const target = state.metricsTarget;
+  const targetKey = target.key;
+  const requestToken = ++metricRequestToken;
+  const path = `/metrics/timeseries?key=${encodeURIComponent(target.scrapePath)}&window=30m`;
+  const metrics = await fetchJSON(path);
+  if (requestToken !== metricRequestToken || !state.metricsDrawerOpen || state.metricsTarget?.key !== targetKey) return;
+  state.metrics = metrics;
+  renderMetricsDrawer();
+}
+
+function scheduleMetricsRefresh() {
+  if (metricRefreshTimer) clearTimeout(metricRefreshTimer);
+  metricRefreshTimer = null;
+  if (!state.metricsDrawerOpen || state.metricsRefreshMs <= 0) return;
+  metricRefreshTimer = setTimeout(async () => {
+    try {
+      await refreshMetricsDrawer();
+      clearError();
+    } catch (error) {
+      showError(error);
+    } finally {
+      scheduleMetricsRefresh();
+    }
+  }, state.metricsRefreshMs);
+}
+
 async function openMetricsDrawer(targetKey) {
   if (!state.metricsEnabled) return;
   const target = state.targets.find((item) => item.key === targetKey);
@@ -647,15 +836,15 @@ async function openMetricsDrawer(targetKey) {
   state.metrics = null;
   state.metricsDrawerOpen = true;
   renderMetricsDrawer();
-  const path = `/metrics/timeseries?key=${encodeURIComponent(target.scrapePath)}&window=30m`;
-  const metrics = await fetchJSON(path);
-  if (!state.metricsDrawerOpen || state.metricsTarget?.key !== targetKey) return;
-  state.metrics = metrics;
-  renderMetricsDrawer();
+  await refreshMetricsDrawer();
+  scheduleMetricsRefresh();
 }
 
 function closeMetricsDrawer() {
   state.metricsDrawerOpen = false;
+  metricRequestToken++;
+  if (metricRefreshTimer) clearTimeout(metricRefreshTimer);
+  metricRefreshTimer = null;
   metricChartRenderToken++;
   destroyMetricCharts();
   $("metricsDrawer").classList.remove("open");
@@ -678,9 +867,17 @@ function renderMetricsDrawer() {
     $("metricsDrawerBody").innerHTML = `<div class="metricsDrawerMessage">Loading metrics…</div>`;
     return;
   }
-  const models = (state.metrics.metrics || []).map(metricChartModel).filter(Boolean);
-  $("metricsDrawerBody").innerHTML = models.length
-    ? `<div class="metricsDrawerGrid">${models.map(metricChartShell).join("")}</div>`
+  const metrics = state.metrics.metrics || [];
+  const constants = constantMetricItems(metrics);
+  const models = metrics.map(metricChartModel).filter(Boolean);
+  $("metricsDrawerBody").innerHTML = constants.length || models.length
+    ? `<div class="metricsDrawerLayout">
+        ${constantMetricsShell(constants)}
+        <section class="metricsCharts">
+          <div class="metricsColumnHead"><span>Changing values</span><span>${models.length}</span></div>
+          <div class="metricsChartGrid">${models.length ? models.map(metricChartShell).join("") : `<div class="metricsColumnEmpty">No changing values in this window</div>`}</div>
+        </section>
+      </div>`
     : `<div class="metricsDrawerMessage">No retained metrics for this target</div>`;
   if (models.length) {
     requestAnimationFrame(() => {
@@ -1026,6 +1223,14 @@ $("targets").addEventListener("click", (e) => {
 });
 $("metricsDrawerClose").addEventListener("click", closeMetricsDrawer);
 $("metricsDrawerBackdrop").addEventListener("click", closeMetricsDrawer);
+$("metricsDrawerRefresh").addEventListener("click", () => {
+  refreshMetricsDrawer().then(clearError).catch(showError);
+  scheduleMetricsRefresh();
+});
+$("metricsRefreshInterval").addEventListener("change", (e) => {
+  state.metricsRefreshMs = Number(e.target.value) || 0;
+  scheduleMetricsRefresh();
+});
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape" && state.metricsDrawerOpen) closeMetricsDrawer();
 });

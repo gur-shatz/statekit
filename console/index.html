@@ -103,7 +103,20 @@
           <h2 id="metricsDrawerTitle">Metrics</h2>
           <div class="metaMono" id="metricsDrawerSub"></div>
         </div>
-        <button class="btn" id="metricsDrawerClose" type="button">Close</button>
+        <div class="metricsDrawerControls">
+          <label class="metricsRefreshControl" for="metricsRefreshInterval">
+            <span>Auto-refresh</span>
+            <select class="select sm" id="metricsRefreshInterval">
+              <option value="0">Off</option>
+              <option value="5000" selected>5s</option>
+              <option value="15000">15s</option>
+              <option value="30000">30s</option>
+              <option value="60000">1m</option>
+            </select>
+          </label>
+          <button class="btn" id="metricsDrawerRefresh" type="button">Refresh</button>
+          <button class="btn" id="metricsDrawerClose" type="button">Close</button>
+        </div>
       </div>
       <div class="metricsDrawerBody" id="metricsDrawerBody"></div>
     </aside>

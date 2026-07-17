@@ -33,6 +33,9 @@ func TestHandlerRendersIndexWithInjectedAPIBase(t *testing.T) {
 	if !strings.Contains(body, `id="metricsDrawer"`) {
 		t.Fatal("metrics drawer not rendered")
 	}
+	if !strings.Contains(body, `id="metricsRefreshInterval"`) || !strings.Contains(body, `id="metricsDrawerRefresh"`) {
+		t.Fatal("metrics refresh controls not rendered")
+	}
 	if !strings.Contains(body, "vendor/uplot/uPlot.min.css") || !strings.Contains(body, "vendor/uplot/uPlot.iife.min.js") {
 		t.Fatal("uPlot assets not loaded by index")
 	}
@@ -85,12 +88,12 @@ func TestHandlerServesTargetMetricsDrawerInteraction(t *testing.T) {
 	js := get(t, handler, "/app.js").Body.String()
 	css := get(t, handler, "/app.css").Body.String()
 
-	for _, want := range []string{"data-metrics-target", "openMetricsDrawer", "/metrics/status", "/metrics/timeseries", "metricsEnabled", "new uPlot", "chartTimeLabel"} {
+	for _, want := range []string{"data-metrics-target", "openMetricsDrawer", "/metrics/status", "/metrics/timeseries", "metricsEnabled", "new uPlot", "chartTimeLabel", "constantMetricItems", "formatSeconds", "metric.unit", "counterDeltaSeries", "scheduleMetricsRefresh", "metricsRefreshMs", "metricTooltipPlugin", "metricChartTooltip"} {
 		if !strings.Contains(js, want) {
 			t.Fatalf("app.js missing %q", want)
 		}
 	}
-	for _, want := range []string{".metricsDrawerPanel", "grid-template-rows: repeat(2"} {
+	for _, want := range []string{".metricsDrawerPanel", "width: 100vw", "max-width: 100vw", "height: 100vh", ".metricsDrawerControls", ".metricsDrawerLayout", ".metricsConstants", ".metricChartTooltip", ".metricTooltipRow", "grid-template-columns: repeat(3, minmax(0, 1fr))"} {
 		if !strings.Contains(css, want) {
 			t.Fatalf("app.css missing %q", want)
 		}

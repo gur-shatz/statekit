@@ -238,6 +238,19 @@ func parsePrometheus(text string) ([]statekit.PrometheusDesc, []statekit.Prometh
 			}
 			continue
 		}
+		if strings.HasPrefix(stripped, "# UNIT ") {
+			rest := strings.TrimPrefix(stripped, "# UNIT ")
+			parts := strings.SplitN(rest, " ", 2)
+			if len(parts) == 2 {
+				d := descs[parts[0]]
+				if d == nil {
+					d = &statekit.PrometheusDesc{Name: parts[0]}
+					descs[parts[0]] = d
+				}
+				d.Unit = strings.TrimSpace(parts[1])
+			}
+			continue
+		}
 		if strings.HasPrefix(stripped, "#") {
 			continue
 		}

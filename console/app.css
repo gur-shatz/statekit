@@ -300,18 +300,47 @@ header.appbar {
 .metricPlot .u-legend .u-series > * { padding: 2px 5px 2px 0; }
 .metricPlot .u-legend .u-value { color: #c5cfdb; }
 .metricPlot .u-select { background: rgba(88, 166, 255, .12); }
+.metricChartTooltip { position: absolute; z-index: 20; display: none; min-width: 210px; max-width: calc(100% - 16px); max-height: calc(100% - 16px); overflow: auto; pointer-events: none; padding: 9px 10px; border: 1px solid #344258; border-radius: 8px; background: rgba(9, 13, 19, .96); box-shadow: 0 8px 24px rgba(0, 0, 0, .55); font-family: var(--mono); }
+.metricTooltipTime { padding-bottom: 7px; margin-bottom: 6px; border-bottom: 1px solid var(--border); color: var(--text-dim); font: 600 10px var(--mono); white-space: nowrap; }
+.metricTooltipRow { display: grid; grid-template-columns: 7px minmax(0, 1fr) auto; align-items: center; gap: 7px; padding: 3px 0; }
+.metricTooltipDot { width: 7px; height: 7px; border-radius: 50%; }
+.metricTooltipLabel { color: var(--muted); font: 400 9px/1.35 var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.metricTooltipValue { color: var(--text-bright); font: 600 10px var(--mono); white-space: nowrap; }
 
-/* target metrics drawer: charts flow into exactly two rows, then horizontally */
+/* target metrics drawer: one scalar column and up to three chart columns */
 .metricsDrawer { position: fixed; inset: 0; z-index: 120; display: none; }
 .metricsDrawer.open { display: block; }
 .metricsDrawerBackdrop { position: absolute; inset: 0; background: rgba(2, 5, 9, .72); backdrop-filter: blur(2px); }
-.metricsDrawerPanel { position: absolute; left: 3vw; right: 3vw; bottom: 0; height: min(86vh, 900px); display: flex; flex-direction: column; background: #0d1118; border: 1px solid #2a3546; border-bottom: 0; border-radius: 14px 14px 0 0; box-shadow: 0 -18px 60px rgba(0, 0, 0, .65); }
+.metricsDrawerPanel { position: absolute; inset: 0; width: 100vw; max-width: 100vw; height: 100vh; display: flex; flex-direction: column; background: #0d1118; }
 .metricsDrawerHeader { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 16px 20px; border-bottom: 1px solid var(--border); }
 .metricsDrawerHeader h2 { margin: 0 0 4px; font: 600 17px var(--mono); color: var(--text-bright); }
+.metricsDrawerControls { display: flex; align-items: center; gap: 9px; flex: none; }
+.metricsRefreshControl { display: flex; align-items: center; gap: 8px; font: 500 10px var(--mono); color: var(--muted-2); }
 .metricsDrawerBody { flex: 1; min-height: 0; overflow: hidden; padding: 14px; }
-.metricsDrawerGrid { height: 100%; display: grid; grid-template-rows: repeat(2, minmax(0, 1fr)); grid-auto-flow: column; grid-auto-columns: minmax(430px, 1fr); gap: 12px; overflow-x: auto; overflow-y: hidden; padding-bottom: 6px; }
-.metricsDrawerGrid .metricChart { min-width: 0; overflow: hidden; }
+.metricsDrawerLayout { height: 100%; display: grid; grid-template-columns: minmax(230px, 280px) minmax(0, 1fr); gap: 12px; overflow: hidden; }
+.metricsConstants, .metricsCharts { min-width: 0; min-height: 0; border: 1px solid var(--border-2); border-radius: 10px; background: #090d13; overflow: hidden; }
+.metricsConstants { grid-column: 1; display: flex; flex-direction: column; }
+.metricsCharts { grid-column: 2; display: flex; flex-direction: column; }
+.metricsColumnHead { flex: none; min-height: 39px; padding: 11px 13px; border-bottom: 1px solid var(--border-2); display: flex; align-items: center; justify-content: space-between; gap: 12px; font: 600 10px var(--mono); letter-spacing: .08em; color: var(--muted-2); text-transform: uppercase; }
+.metricsColumnHead span:last-child { color: var(--faint); }
+.metricsConstantList { min-height: 0; overflow-y: auto; padding: 5px 11px 11px; }
+.constantMetric { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 12px; align-items: center; padding: 10px 2px; border-bottom: 1px solid var(--border-soft); }
+.constantMetricKey { min-width: 0; display: flex; flex-direction: column; gap: 3px; font: 500 10px/1.35 var(--mono); color: var(--text-dim); overflow-wrap: anywhere; }
+.constantMetricKey small { font: 400 9px/1.35 var(--mono); color: var(--muted-3); overflow-wrap: anywhere; }
+.constantMetricValue { font: 600 12px var(--mono); color: var(--code-blue); white-space: nowrap; text-align: right; }
+.metricsChartGrid { min-height: 0; overflow-y: auto; padding: 11px; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; align-content: start; }
+.metricsChartGrid .metricChart { min-width: 0; min-height: 270px; overflow: hidden; }
+.metricsColumnEmpty { padding: 22px 14px; font: 400 11px/1.5 var(--mono); color: var(--muted-3); }
 .metricsDrawerMessage { height: 100%; display: grid; place-items: center; font: 400 12px var(--mono); color: var(--muted-2); }
+
+@media (max-width: 1200px) {
+  .metricsChartGrid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+@media (max-width: 820px) {
+  .metricsDrawerLayout { grid-template-columns: minmax(190px, 240px) minmax(0, 1fr); }
+  .metricsChartGrid { grid-template-columns: minmax(0, 1fr); }
+}
 
 .childList { display: flex; flex-direction: column; gap: 5px; }
 .childRow { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 13px; border-radius: 8px; cursor: pointer; background: var(--panel-3); border: 1px solid var(--border-2); border-left: 2px solid rgba(255, 255, 255, .06); transition: background .1s ease; }

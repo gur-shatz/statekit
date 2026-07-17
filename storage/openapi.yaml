@@ -792,13 +792,16 @@ components:
         type:
           type: string
           enum: [gauge, counter, histogram, summary]
+        unit:
+          description: OpenMetrics UNIT metadata for this metric family.
+          type: string
         series:
           type: array
           items:
             $ref: '#/components/schemas/MeasurementSeries'
     MeasurementSeries:
       type: object
-      required: [timestamps, values]
+      required: [timestamps, values, constant]
       properties:
         labels:
           type: object
@@ -814,6 +817,9 @@ components:
           items:
             type: number
             format: double
+        constant:
+          description: True when every value returned for this series is equal.
+          type: boolean
     StateDisplayDocument:
       type: object
       required: [kind, label_path, states]

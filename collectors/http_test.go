@@ -144,6 +144,7 @@ func TestHTTPMetricsPrometheusExportsGlobalMeasurements(t *testing.T) {
 		"# TYPE http_server_errors_per_second gauge",
 		"# HELP http_server_average_latency_seconds Average HTTP request latency in seconds by path over the current 5m0s estimated window.",
 		"# TYPE http_server_average_latency_seconds gauge",
+		"# UNIT http_server_average_latency_seconds seconds",
 		"# HELP http_server_response_codes HTTP responses by status code over the current 5m0s estimated window.",
 		"# TYPE http_server_response_codes gauge",
 		"# HELP http_server_error_urls HTTP 5xx responses by path and status code over the current 5m0s estimated window.",

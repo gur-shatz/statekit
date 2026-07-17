@@ -144,9 +144,10 @@ metrics:
   drop_scrape_path: false          # set at an export boundary to omit the path
 ```
 
-Sample lines, `# HELP`, and `# TYPE` are all preserved. On metric-name
-collisions across targets, descriptors follow first-wins; samples are
-disambiguated by their labels (including the auto-added `target_id`).
+Sample lines, `# HELP`, `# TYPE`, and OpenMetrics `# UNIT` metadata are all
+preserved. On metric-name collisions across targets, descriptors follow
+first-wins; samples are disambiguated by their labels (including the
+auto-added `target_id`).
 
 ## Configuration
 

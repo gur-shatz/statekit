@@ -52,6 +52,14 @@ most 100 label sets; when cardinality exceeds that cap, the label sets with
 the smallest latest values are dropped. Override the backend with
 `WithMetricsStore(NewMemoryMetricsStore(retention, seriesCap))`.
 
+Timeseries responses preserve OpenMetrics `UNIT` metadata on each metric
+family. Each returned label-set series also includes `constant`, which is true
+when all values in the requested window are equal (including a one-point
+series). The console presents those scalar values separately from changing
+charts and formats known base units such as seconds and bytes. Counter charts
+show reset-aware deltas between observations, and the metrics drawer can
+automatically refresh at an operator-selected interval.
+
 The point payload is approximately 16 bytes per retained observation:
 
 `keys × metrics/key × series/metric × (retention / scrape interval) × 16`

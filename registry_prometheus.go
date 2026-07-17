@@ -105,6 +105,11 @@ func (r *Registry) Prometheus(w io.Writer, opts ...PrometheusOutputOption) error
 		if _, err := fmt.Fprintf(w, "# TYPE %s %s\n", desc.Name, desc.Type); err != nil {
 			return err
 		}
+		if desc.Unit != "" {
+			if _, err := fmt.Fprintf(w, "# UNIT %s %s\n", desc.Name, desc.Unit); err != nil {
+				return err
+			}
+		}
 		if err := writePrometheusSamples(w, labels, options.dropLabels, samplesByName[desc.Name]); err != nil {
 			return err
 		}
@@ -124,21 +129,25 @@ func (r *Registry) Prometheus(w io.Writer, opts ...PrometheusOutputOption) error
 
 func prometheusDescName(sampleName string, descs []PrometheusDesc) string {
 	for _, desc := range descs {
-		if desc.Type != PrometheusHistogram {
-			continue
+		if desc.Type == PrometheusCounter {
+			if sampleName == desc.Name+"_total" || sampleName == desc.Name+"_created" {
+				return desc.Name
+			}
 		}
-		if sampleName == desc.Name ||
-			sampleName == desc.Name+"_bucket" ||
-			sampleName == desc.Name+"_sum" ||
-			sampleName == desc.Name+"_count" {
-			return desc.Name
+		if desc.Type == PrometheusHistogram || desc.Type == PrometheusSummary {
+			if sampleName == desc.Name ||
+				sampleName == desc.Name+"_sum" ||
+				sampleName == desc.Name+"_count" ||
+				(desc.Type == PrometheusHistogram && sampleName == desc.Name+"_bucket") {
+				return desc.Name
+			}
 		}
 	}
 	return sampleName
 }
 
 func samePrometheusDesc(a, b PrometheusDesc) bool {
-	return a.Help == b.Help && a.Type == b.Type && slicesEqual(a.Labels, b.Labels)
+	return a.Help == b.Help && a.Type == b.Type && a.Unit == b.Unit && slicesEqual(a.Labels, b.Labels)
 }
 
 func slicesEqual(a, b []string) bool {

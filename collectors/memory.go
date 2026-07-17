@@ -101,16 +101,16 @@ func (s MemorySnapshot) UsageBytes() (uint64, string, bool) {
 
 func (m *MemoryMetrics) DescribePrometheus() []statekit.PrometheusDesc {
 	return []statekit.PrometheusDesc{
-		{Name: "process_memory_os_rss_bytes", Help: "Current process resident set size reported by the OS, when available.", Type: statekit.PrometheusGauge},
-		{Name: "process_memory_os_peak_rss_bytes", Help: "Peak process resident set size reported by the OS, when available.", Type: statekit.PrometheusGauge},
-		{Name: "process_memory_go_alloc_bytes", Help: "Bytes of allocated heap objects reported by Go runtime MemStats Alloc.", Type: statekit.PrometheusGauge},
-		{Name: "process_memory_go_total_alloc_bytes", Help: "Cumulative bytes allocated for heap objects reported by Go runtime MemStats TotalAlloc.", Type: statekit.PrometheusCounter},
-		{Name: "process_memory_go_sys_bytes", Help: "Total bytes of memory obtained from the OS by the Go runtime.", Type: statekit.PrometheusGauge},
-		{Name: "process_memory_go_heap_alloc_bytes", Help: "Bytes of allocated heap objects reported by Go runtime MemStats HeapAlloc.", Type: statekit.PrometheusGauge},
-		{Name: "process_memory_go_heap_sys_bytes", Help: "Bytes of heap memory obtained from the OS by the Go runtime.", Type: statekit.PrometheusGauge},
-		{Name: "process_memory_go_heap_idle_bytes", Help: "Bytes in idle unused spans reported by Go runtime MemStats HeapIdle.", Type: statekit.PrometheusGauge},
-		{Name: "process_memory_go_heap_released_bytes", Help: "Bytes of physical memory returned to the OS by the Go runtime.", Type: statekit.PrometheusGauge},
-		{Name: "process_memory_go_stack_inuse_bytes", Help: "Bytes in stack spans reported by Go runtime MemStats StackInuse.", Type: statekit.PrometheusGauge},
+		{Name: "process_memory_os_rss_bytes", Help: "Current process resident set size reported by the OS, when available.", Type: statekit.PrometheusGauge, Unit: "bytes"},
+		{Name: "process_memory_os_peak_rss_bytes", Help: "Peak process resident set size reported by the OS, when available.", Type: statekit.PrometheusGauge, Unit: "bytes"},
+		{Name: "process_memory_go_alloc_bytes", Help: "Bytes of allocated heap objects reported by Go runtime MemStats Alloc.", Type: statekit.PrometheusGauge, Unit: "bytes"},
+		{Name: "process_memory_go_total_alloc_bytes", Help: "Cumulative bytes allocated for heap objects reported by Go runtime MemStats TotalAlloc.", Type: statekit.PrometheusCounter, Unit: "bytes"},
+		{Name: "process_memory_go_sys_bytes", Help: "Total bytes of memory obtained from the OS by the Go runtime.", Type: statekit.PrometheusGauge, Unit: "bytes"},
+		{Name: "process_memory_go_heap_alloc_bytes", Help: "Bytes of allocated heap objects reported by Go runtime MemStats HeapAlloc.", Type: statekit.PrometheusGauge, Unit: "bytes"},
+		{Name: "process_memory_go_heap_sys_bytes", Help: "Bytes of heap memory obtained from the OS by the Go runtime.", Type: statekit.PrometheusGauge, Unit: "bytes"},
+		{Name: "process_memory_go_heap_idle_bytes", Help: "Bytes in idle unused spans reported by Go runtime MemStats HeapIdle.", Type: statekit.PrometheusGauge, Unit: "bytes"},
+		{Name: "process_memory_go_heap_released_bytes", Help: "Bytes of physical memory returned to the OS by the Go runtime.", Type: statekit.PrometheusGauge, Unit: "bytes"},
+		{Name: "process_memory_go_stack_inuse_bytes", Help: "Bytes in stack spans reported by Go runtime MemStats StackInuse.", Type: statekit.PrometheusGauge, Unit: "bytes"},
 		{Name: "process_memory_go_objects", Help: "Number of allocated heap objects reported by Go runtime MemStats HeapObjects.", Type: statekit.PrometheusGauge},
 	}
 }

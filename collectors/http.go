@@ -353,6 +353,7 @@ func (m *HTTPMetrics) DescribePrometheus() []statekit.PrometheusDesc {
 			Name:   "http_server_average_latency_seconds",
 			Help:   fmt.Sprintf("Average HTTP request latency in seconds by path over the current %s estimated window.", window),
 			Type:   statekit.PrometheusGauge,
+			Unit:   "seconds",
 			Labels: []string{"path"},
 		},
 		{

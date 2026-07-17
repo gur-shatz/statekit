@@ -56,6 +56,17 @@ func TestMemoryMetricsCollectPrometheus(t *testing.T) {
 	}
 }
 
+func TestMemoryMetricsDescribeByteUnits(t *testing.T) {
+	for _, desc := range NewMemoryMetrics().DescribePrometheus() {
+		if strings.HasSuffix(desc.Name, "_bytes") && desc.Unit != "bytes" {
+			t.Fatalf("%s unit = %q, want bytes", desc.Name, desc.Unit)
+		}
+		if !strings.HasSuffix(desc.Name, "_bytes") && desc.Unit != "" {
+			t.Fatalf("%s unexpected unit = %q", desc.Name, desc.Unit)
+		}
+	}
+}
+
 func TestMemoryMetricsOmitsUnavailableOSPrometheusSamples(t *testing.T) {
 	metrics := NewMemoryMetrics(withMemoryReader(func() MemorySnapshot {
 		return MemorySnapshot{GoSysBytes: 30}

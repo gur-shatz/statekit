@@ -199,3 +199,22 @@ func TestMetricsScrapePreservesConfiguredScrapedFromLabel(t *testing.T) {
 		t.Fatalf("scraped_from = %q, want configured label; labels = %+v", got, samples[0].Labels)
 	}
 }
+
+func TestParsePrometheusPreservesUnitDirective(t *testing.T) {
+	descs, samples, err := parsePrometheus(`# TYPE request_latency_seconds gauge
+# UNIT request_latency_seconds seconds
+# HELP request_latency_seconds Request latency.
+request_latency_seconds 1.234
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(descs) != 1 || descs[0].Name != "request_latency_seconds" ||
+		descs[0].Type != statekit.PrometheusGauge || descs[0].Unit != "seconds" ||
+		descs[0].Help != "Request latency." {
+		t.Fatalf("descriptors = %+v", descs)
+	}
+	if len(samples) != 1 || samples[0].Value != 1.234 {
+		t.Fatalf("samples = %+v", samples)
+	}
+}

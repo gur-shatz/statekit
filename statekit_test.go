@@ -443,12 +443,13 @@ func TestRegistryPrometheusRefreshesDynamicCollectorDescriptors(t *testing.T) {
 		t.Fatal(err)
 	}
 	collector.descs = []PrometheusDesc{{
-		Name: "scraped_requests_total",
-		Help: "Requests scraped from a target.",
-		Type: PrometheusCounter,
+		Name: "scraped_latency_seconds",
+		Help: "Latency scraped from a target.",
+		Type: PrometheusGauge,
+		Unit: "seconds",
 	}}
 	collector.samples = []PrometheusSample{{
-		Name:  "scraped_requests_total",
+		Name:  "scraped_latency_seconds",
 		Value: 2,
 	}}
 
@@ -458,9 +459,10 @@ func TestRegistryPrometheusRefreshesDynamicCollectorDescriptors(t *testing.T) {
 	}
 	text := out.String()
 	for _, want := range []string{
-		"# HELP scraped_requests_total Requests scraped from a target.",
-		"# TYPE scraped_requests_total counter",
-		"scraped_requests_total 2",
+		"# HELP scraped_latency_seconds Latency scraped from a target.",
+		"# TYPE scraped_latency_seconds gauge",
+		"# UNIT scraped_latency_seconds seconds",
+		"scraped_latency_seconds 2",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("prometheus output missing %q:\n%s", want, text)
@@ -925,6 +927,13 @@ func TestRegistryPrometheusGroupsDescriptorsWithSamples(t *testing.T) {
 	}
 	if !(queriesType < queriesSample && queriesSample < stateHelp) {
 		t.Fatalf("prometheus descriptor and sample were not grouped:\n%s", text)
+	}
+}
+
+func TestPrometheusDescNameAssociatesOpenMetricsCounterTotal(t *testing.T) {
+	descs := []PrometheusDesc{{Name: "requests", Type: PrometheusCounter}}
+	if got := prometheusDescName("requests_total", descs); got != "requests" {
+		t.Fatalf("descriptor name = %q, want requests", got)
 	}
 }
 
