@@ -20,6 +20,13 @@ type embeddedAggregateState struct {
 	AggregateState
 }
 
+type fixedSnapshotState struct {
+	snapshot Snapshot
+}
+
+func (s fixedSnapshotState) Name() string       { return s.snapshot.Name }
+func (s fixedSnapshotState) Snapshot() Snapshot { return s.snapshot }
+
 func TestManualStateTracksHistory(t *testing.T) {
 	now := time.Date(2026, 5, 15, 12, 0, 0, 0, time.UTC)
 	s := NewManualState("database", WithClock(func() time.Time { return now }))
@@ -356,6 +363,76 @@ func TestRegistryPrometheusSampleLabelsOverrideRegistryLabels(t *testing.T) {
 	want := `requests_total{example="sample",region="local"} 1`
 	if !strings.Contains(text, want) {
 		t.Fatalf("prometheus output missing %q:\n%s", want, text)
+	}
+}
+
+func TestRegistryPrometheusStateMetricsInheritScrapeProvenance(t *testing.T) {
+	reg := NewRegistry()
+	state := fixedSnapshotState{snapshot: Snapshot{
+		Name:        "api",
+		ScrapedFrom: "checkout-east",
+		ScrapePath:  "regional-east > checkout-east",
+		Status:      Warn,
+		Importance:  Important,
+		Checks: []Snapshot{{
+			Name:       "database",
+			Status:     Fail,
+			Importance: Important,
+		}},
+	}}
+	if err := reg.Register(state); err != nil {
+		t.Fatal(err)
+	}
+
+	var out bytes.Buffer
+	if err := reg.Prometheus(&out); err != nil {
+		t.Fatal(err)
+	}
+	text := out.String()
+	for _, want := range []string{
+		`state_level{importance="important",scrape_path="regional-east > checkout-east",scraped_from="checkout-east",state="api"} 2`,
+		`state_level{importance="important",scrape_path="regional-east > checkout-east",scraped_from="checkout-east",state="database"} 3`,
+		`state_time_in_state_seconds{importance="important",scrape_path="regional-east > checkout-east",scraped_from="checkout-east",state="database"} 0`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("prometheus output missing %q:\n%s", want, text)
+		}
+	}
+}
+
+func TestRegistryPrometheusCanDropLabelsAtExportBoundary(t *testing.T) {
+	reg := NewRegistry(WithLabel("scrape_path", "registry-path"))
+	state := fixedSnapshotState{snapshot: Snapshot{
+		Name:        "api",
+		ScrapedFrom: "checkout-east",
+		ScrapePath:  "regional-east > checkout-east",
+		Status:      Pass,
+		Importance:  Important,
+	}}
+	if err := reg.Register(state); err != nil {
+		t.Fatal(err)
+	}
+	counter := NewCounterVec("requests_total", "Total requests.", "scrape_path", "scraped_from")
+	counter.WithLabelValues("regional-east > checkout-east", "checkout-east").Inc()
+	if err := reg.RegisterCollectors(counter); err != nil {
+		t.Fatal(err)
+	}
+
+	var out bytes.Buffer
+	if err := reg.Prometheus(&out, DropPrometheusLabels("scrape_path")); err != nil {
+		t.Fatal(err)
+	}
+	text := out.String()
+	if strings.Contains(text, "scrape_path=") {
+		t.Fatalf("prometheus output retained scrape_path:\n%s", text)
+	}
+	for _, want := range []string{
+		`requests_total{scraped_from="checkout-east"} 1`,
+		`state_level{importance="important",scraped_from="checkout-east",state="api"} 1`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("prometheus output missing %q:\n%s", want, text)
+		}
 	}
 }
 

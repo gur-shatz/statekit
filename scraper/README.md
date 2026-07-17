@@ -56,7 +56,11 @@ targets:
 Both `target_id` (from `id`) and `group_name` (from `group_name`) are
 emitted as labels on every state and metric the target produces. Scraped
 metrics also receive `scraped_from`, using the target identifier unless
-the sample already carries an upstream `scraped_from`.
+the sample already carries an upstream `scraped_from`, and `scrape_path`.
+The path is nearest-first and ends at the origin, matching state aggregation;
+each hop prepends its target identifier to an existing path. When upgrading
+from an upstream that has `scraped_from` but no path, the first path-aware
+scraper seeds the rightmost element from `scraped_from`.
 
 ## Task types
 
@@ -127,6 +131,7 @@ metrics:
     - /state/metrics
   labels:
     subsystem: issuer
+  drop_scrape_path: false          # set at an export boundary to omit the path
 ```
 
 Sample lines, `# HELP`, and `# TYPE` are all preserved. On metric-name
@@ -209,6 +214,21 @@ After merging, the scraper appends structural labels:
 - `group_name` from the target's `group_name`
 - `scraped_from` on scraped metrics, preserving an existing non-empty
   upstream value
+- `scrape_path` on scraped metrics, prepending the current target identifier
+  to an existing upstream path. Set `metrics.drop_scrape_path: true` at a
+  boundary that should not re-emit this Statekit aggregation provenance.
+
+Registry-generated state metrics (`state_level` and
+`state_time_in_state_seconds`) inherit `scraped_from` and `scrape_path` from
+their state tree, including checks. To remove the path from the complete
+Prometheus output—both generated state metrics and scraped collectors—apply
+`statekit.DropPrometheusLabels("scrape_path")` to the export handler:
+
+```go
+mux.Handle("/metrics", reg.PrometheusHandler(
+    statekit.DropPrometheusLabels("scrape_path"),
+))
+```
 
 ## Expiration
 

@@ -494,6 +494,15 @@ requests.WithLabelValues("/checkout", "200").Inc()
 inflight.Set(3)
 ```
 
+At an export boundary, labels used only for internal aggregation can be
+removed from the complete Prometheus rendering:
+
+```go
+mux.Handle("/metrics", reg.PrometheusHandler(
+    statekit.DropPrometheusLabels("scrape_path"),
+))
+```
+
 ### Custom collectors
 
 For anything richer, implement the two-method `PrometheusCollector`

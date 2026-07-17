@@ -94,6 +94,7 @@ func buildMetrics(target TargetConfig, cfg Config, client *http.Client, collecto
 					samples[i].Labels = map[string]string{}
 				}
 				scrapedFrom := samples[i].Labels["scraped_from"]
+				scrapePath := samples[i].Labels["scrape_path"]
 				for k, v := range labels {
 					samples[i].Labels[k] = v
 				}
@@ -104,6 +105,22 @@ func buildMetrics(target TargetConfig, cfg Config, client *http.Client, collecto
 					scrapedFrom = source
 				}
 				samples[i].Labels["scraped_from"] = scrapedFrom
+				if target.Metrics.DropScrapePath {
+					delete(samples[i].Labels, "scrape_path")
+					continue
+				}
+				if scrapePath == "" {
+					scrapePath = samples[i].Labels["scrape_path"]
+				}
+				if scrapePath == "" {
+					scrapePath = source
+					if scrapedFrom != source {
+						scrapePath += " > " + scrapedFrom
+					}
+				} else {
+					scrapePath = source + " > " + scrapePath
+				}
+				samples[i].Labels["scrape_path"] = scrapePath
 			}
 			allSamples = append(allSamples, samples...)
 			allDescs = append(allDescs, descs...)

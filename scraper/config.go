@@ -195,6 +195,9 @@ type MetricsTask struct {
 	Labels   map[string]string `yaml:"labels,omitempty"`
 	Interval Duration          `yaml:"interval,omitempty"`
 	Timeout  Duration          `yaml:"timeout,omitempty"`
+	// DropScrapePath omits Statekit's aggregation route from re-emitted
+	// samples at an export boundary. scraped_from remains available.
+	DropScrapePath bool `yaml:"drop_scrape_path,omitempty"`
 }
 
 // EscalationsTask scrapes support escalation incidents from one path. The same

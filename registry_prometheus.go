@@ -17,7 +17,38 @@ var (
 	labelValueEscaper = strings.NewReplacer(`\`, `\\`, "\n", `\n`, `"`, `\"`)
 )
 
-func (r *Registry) Prometheus(w io.Writer) error {
+type prometheusOutputOptions struct {
+	dropLabels map[string]struct{}
+}
+
+// PrometheusOutputOption customizes one Prometheus rendering or handler.
+type PrometheusOutputOption func(*prometheusOutputOptions)
+
+// DropPrometheusLabels removes labels from the rendered output after registry
+// and sample labels are merged. It is intended for export-boundary projection.
+func DropPrometheusLabels(names ...string) PrometheusOutputOption {
+	return func(options *prometheusOutputOptions) {
+		if options.dropLabels == nil {
+			options.dropLabels = map[string]struct{}{}
+		}
+		for _, name := range names {
+			options.dropLabels[name] = struct{}{}
+		}
+	}
+}
+
+func resolvePrometheusOutputOptions(opts []PrometheusOutputOption) prometheusOutputOptions {
+	var options prometheusOutputOptions
+	for _, opt := range opts {
+		if opt != nil {
+			opt(&options)
+		}
+	}
+	return options
+}
+
+func (r *Registry) Prometheus(w io.Writer, opts ...PrometheusOutputOption) error {
+	options := resolvePrometheusOutputOptions(opts)
 	r.mu.RLock()
 	labels := maps.Clone(r.labels)
 	collectors := append([]PrometheusCollector(nil), r.collectors...)
@@ -74,7 +105,7 @@ func (r *Registry) Prometheus(w io.Writer) error {
 		if _, err := fmt.Fprintf(w, "# TYPE %s %s\n", desc.Name, desc.Type); err != nil {
 			return err
 		}
-		if err := writePrometheusSamples(w, labels, samplesByName[desc.Name]); err != nil {
+		if err := writePrometheusSamples(w, labels, options.dropLabels, samplesByName[desc.Name]); err != nil {
 			return err
 		}
 		delete(samplesByName, desc.Name)
@@ -84,7 +115,7 @@ func (r *Registry) Prometheus(w io.Writer) error {
 		if _, undescribed := samplesByName[sample.Name]; !undescribed {
 			continue
 		}
-		if err := writePrometheusSamples(w, labels, []PrometheusSample{sample}); err != nil {
+		if err := writePrometheusSamples(w, labels, options.dropLabels, []PrometheusSample{sample}); err != nil {
 			return err
 		}
 	}
@@ -122,11 +153,14 @@ func slicesEqual(a, b []string) bool {
 	return true
 }
 
-func writePrometheusSamples(w io.Writer, labels map[string]string, samples []PrometheusSample) error {
+func writePrometheusSamples(w io.Writer, labels map[string]string, dropLabels map[string]struct{}, samples []PrometheusSample) error {
 	for _, sample := range samples {
 		merged := maps.Clone(labels)
 		for k, v := range sample.Labels {
 			merged[k] = v
+		}
+		for name := range dropLabels {
+			delete(merged, name)
 		}
 		if _, err := fmt.Fprintf(w, "%s%s %.4g\n", sample.Name, formatLabels(merged), sample.Value); err != nil {
 			return err
@@ -135,16 +169,28 @@ func writePrometheusSamples(w io.Writer, labels map[string]string, samples []Pro
 	return nil
 }
 
-func (r *Registry) PrometheusHandler() http.Handler {
+func (r *Registry) PrometheusHandler(opts ...PrometheusOutputOption) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
-		if err := r.Prometheus(w); err != nil {
+		if err := r.Prometheus(w, opts...); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 		}
 	})
 }
 
 func stateSamples(s Snapshot) []PrometheusSample {
+	return stateSamplesWithProvenance(s, "", "")
+}
+
+func stateSamplesWithProvenance(s Snapshot, inheritedScrapedFrom, inheritedScrapePath string) []PrometheusSample {
+	scrapedFrom := inheritedScrapedFrom
+	if s.ScrapedFrom != "" {
+		scrapedFrom = s.ScrapedFrom
+	}
+	scrapePath := inheritedScrapePath
+	if s.ScrapePath != "" {
+		scrapePath = s.ScrapePath
+	}
 	labels := map[string]string{
 		"state":      s.Name,
 		"importance": s.Importance.String(),
@@ -154,15 +200,18 @@ func stateSamples(s Snapshot) []PrometheusSample {
 	// example, a local synthetic "health" and a "health" mirrored in from a
 	// remote target via state_aggregation. Without this, both would emit
 	// identical Prometheus rows (a protocol violation).
-	if s.ScrapedFrom != "" {
-		labels["scraped_from"] = s.ScrapedFrom
+	if scrapedFrom != "" {
+		labels["scraped_from"] = scrapedFrom
+	}
+	if scrapePath != "" {
+		labels["scrape_path"] = scrapePath
 	}
 	samples := []PrometheusSample{
 		{Name: "state_level", Labels: labels, Value: prometheusStatusValue(s.Status)},
 		{Name: "state_time_in_state_seconds", Labels: labels, Value: float64(s.ChangedSecsAgo)},
 	}
 	for _, child := range s.Checks {
-		samples = append(samples, stateSamples(child)...)
+		samples = append(samples, stateSamplesWithProvenance(child, scrapedFrom, scrapePath)...)
 	}
 	return samples
 }
