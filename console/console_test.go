@@ -36,7 +36,7 @@ func TestHandlerRendersIndexWithInjectedAPIBase(t *testing.T) {
 	if !strings.Contains(body, `id="metricsRefreshInterval"`) || !strings.Contains(body, `id="metricsDrawerRefresh"`) {
 		t.Fatal("metrics refresh controls not rendered")
 	}
-	if !strings.Contains(body, "vendor/uplot/uPlot.min.css") || !strings.Contains(body, "vendor/uplot/uPlot.iife.min.js") {
+	if !strings.Contains(body, "thirdparty/uplot/uPlot.min.css") || !strings.Contains(body, "thirdparty/uplot/uPlot.iife.min.js") {
 		t.Fatal("uPlot assets not loaded by index")
 	}
 	if ct := response.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/html") {
@@ -66,9 +66,9 @@ func TestHandlerServesAssets(t *testing.T) {
 	}{
 		{"/app.css", "text/css", ".fleet"},
 		{"/app.js", "text/javascript", "STATEKIT_API_BASE"},
-		{"/vendor/uplot/uPlot.min.css", "text/css", ".uplot"},
-		{"/vendor/uplot/uPlot.iife.min.js", "text/javascript", "var uPlot="},
-		{"/vendor/uplot/LICENSE", "text/plain", "MIT License"},
+		{"/thirdparty/uplot/uPlot.min.css", "text/css", ".uplot"},
+		{"/thirdparty/uplot/uPlot.iife.min.js", "text/javascript", "var uPlot="},
+		{"/thirdparty/uplot/LICENSE", "text/plain", "MIT License"},
 	} {
 		response := get(t, handler, tc.path)
 		if response.Code != http.StatusOK {

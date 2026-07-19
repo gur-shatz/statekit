@@ -18,7 +18,7 @@ import (
 	"strings"
 )
 
-//go:embed index.html app.css app.js vendor/uplot/uPlot.iife.min.js vendor/uplot/uPlot.min.css vendor/uplot/LICENSE
+//go:embed index.html app.css app.js thirdparty/uplot/uPlot.iife.min.js thirdparty/uplot/uPlot.min.css thirdparty/uplot/LICENSE
 var assets embed.FS
 
 var indexTemplate = template.Must(template.ParseFS(assets, "index.html"))
@@ -58,9 +58,9 @@ func Handler(opts Options) http.Handler {
 	})
 	mux.HandleFunc("GET /app.css", asset("app.css", "text/css; charset=utf-8"))
 	mux.HandleFunc("GET /app.js", asset("app.js", "text/javascript; charset=utf-8"))
-	mux.HandleFunc("GET /vendor/uplot/uPlot.min.css", asset("vendor/uplot/uPlot.min.css", "text/css; charset=utf-8"))
-	mux.HandleFunc("GET /vendor/uplot/uPlot.iife.min.js", asset("vendor/uplot/uPlot.iife.min.js", "text/javascript; charset=utf-8"))
-	mux.HandleFunc("GET /vendor/uplot/LICENSE", asset("vendor/uplot/LICENSE", "text/plain; charset=utf-8"))
+	mux.HandleFunc("GET /thirdparty/uplot/uPlot.min.css", asset("thirdparty/uplot/uPlot.min.css", "text/css; charset=utf-8"))
+	mux.HandleFunc("GET /thirdparty/uplot/uPlot.iife.min.js", asset("thirdparty/uplot/uPlot.iife.min.js", "text/javascript; charset=utf-8"))
+	mux.HandleFunc("GET /thirdparty/uplot/LICENSE", asset("thirdparty/uplot/LICENSE", "text/plain; charset=utf-8"))
 	return mux
 }
 
